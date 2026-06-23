@@ -11,20 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Edited by Gabriel Amaral
 
 # Attention module for Falcon Vision
-# Supports FlexAttention for efficient vision-only attention patterns
+# Supports FlexAttention (CUDA) or SDPA fallback (CPU) for device-agnostic attention
 
 import einops as E
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn.attention.flex_attention import (
-    AuxRequest,
-    BlockMask,
-    create_block_mask,
-    flex_attention,
-)
 
 from .rope import apply_3d_rotary_emb
 
@@ -41,8 +37,40 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
+# Lazy flex_attention import: only available on CUDA with compute capability >= 8.0
+_HAS_FLEX_ATTENTION = False
+_flex_attention = None
+_AuxRequest = None
+_BlockMask = None
+_create_block_mask = None
+
+try:
+    from torch.nn.attention.flex_attention import (
+        AuxRequest as _AuxRequest,
+    )
+    from torch.nn.attention.flex_attention import (
+        BlockMask as _BlockMask,
+    )
+    from torch.nn.attention.flex_attention import (
+        create_block_mask as _create_block_mask,
+    )
+    from torch.nn.attention.flex_attention import (
+        flex_attention as _flex_attention,
+    )
+
+    _HAS_FLEX_ATTENTION = True
+except ImportError:
+    pass
+
+
+def device_supports_flex_attention(device: torch.device) -> bool:
+    """Check if the device supports flex_attention."""
+    return _HAS_FLEX_ATTENTION and device.type == "cuda"
+
+
 class FlexAttentionWrapper(nn.Module):
-    """Wrapper for flex_attention with optional compilation and aux outputs."""
+    """Wrapper for flex_attention with optional compilation and aux outputs.
+    Falls back to SDPA on devices without flex_attention support."""
 
     _compiled = None
 
@@ -51,38 +79,34 @@ class FlexAttentionWrapper(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        block_mask: BlockMask,
+        block_mask: _BlockMask | None = None,
         compile: bool = True,
         return_aux: bool = False,
     ):
-        # Choose compiled or eager function
-        fn = flex_attention
-        if compile:
+        fn = _flex_attention
+        if compile and _flex_attention is not None:
             if FlexAttentionWrapper._compiled is None:
                 FlexAttentionWrapper._compiled = torch.compile(
-                    flex_attention,
+                    _flex_attention,
                     mode="max-autotune-no-cudagraphs",
                 )
             fn = FlexAttentionWrapper._compiled
 
         if return_aux:
-            # Request log-sum-exp aux for sink attention
-            return fn(q, k, v, block_mask=block_mask, return_aux=AuxRequest(lse=True))
-        else:
-            return fn(q, k, v, block_mask=block_mask)
+            return fn(q, k, v, block_mask=block_mask, return_aux=_AuxRequest(lse=True))
+        return fn(q, k, v, block_mask=block_mask)
 
 
-class SDPAttentionWrapper(nn.Module):
-    """Fallback SDPA attention when flex_attention is not available."""
-
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+def create_sdpa_attention_mask(full_mask: torch.Tensor) -> torch.Tensor:
+    """Convert a 2D padding mask (N, S) to a 4D SDPA attention mask (N, 1, S, S).
+    Valid positions get 0.0, masked positions get -inf."""
+    N, S = full_mask.shape
+    valid_q = full_mask.unsqueeze(-1)
+    valid_kv = full_mask.unsqueeze(-2)
+    mask_matrix = valid_q & valid_kv
+    attn_mask = torch.where(mask_matrix, 0.0, float("-inf"))
+    attn_mask = attn_mask.unsqueeze(1)
+    return attn_mask
 
 
 class Attention(nn.Module):
@@ -133,7 +157,7 @@ class Attention(nn.Module):
         freqs_cis: torch.Tensor,
         freqs_cis_2d: torch.Tensor | None = None,
         pos_thw: torch.Tensor | None = None,
-        attention_masks: BlockMask | torch.Tensor | None = None,
+        attention_masks: "_BlockMask | torch.Tensor | None" = None,
         compile: bool = True,
     ) -> torch.Tensor:
         bs, seqlen, _ = x.shape
@@ -156,20 +180,21 @@ class Attention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
 
-        output, aux = self.inner_attention(
-            xq,
-            xk,
-            xv,
-            block_mask=attention_masks,
-            compile=compile,
-            return_aux=True,
-        )
-        # aux.lse: (B, H, S) log-sum-exp per head & position
-        sinks_BHL = E.rearrange(self.sinks, "h -> 1 h 1")
-        sink_scale = torch.sigmoid(aux.lse - sinks_BHL)
-        output = (output * sink_scale.unsqueeze(-1)).to(output.dtype)
+        use_flex = self.use_flex_attn and isinstance(attention_masks, _BlockMask)
 
-        output = E.rearrange(output, "b h s d -> b s (h d)").contiguous()
+        if use_flex:
+            output, aux = self.inner_attention(
+                xq, xk, xv, block_mask=attention_masks, compile=compile, return_aux=True
+            )
+            sinks_BHL = E.rearrange(self.sinks, "h -> 1 h 1")
+            sink_scale = torch.sigmoid(aux.lse - sinks_BHL)
+            output = (output * sink_scale.unsqueeze(-1)).to(output.dtype)
+            output = E.rearrange(output, "b h s d -> b s (h d)").contiguous()
+        else:
+            attn_mask = attention_masks if isinstance(attention_masks, torch.Tensor) else None
+            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=attn_mask)
+            output = output.transpose(1, 2).contiguous().reshape(bs, seqlen, -1)
+
         return self.wo(output)
 
 
@@ -180,9 +205,9 @@ def create_attention_mask(
     Q_LEN: int,
     KV_LEN: int,
     BLOCK_SIZE: tuple[int, int] = (64, 64),
-) -> BlockMask:
+) -> "_BlockMask":
     """Create a BlockMask for flex_attention."""
-    return create_block_mask(
+    return _create_block_mask(
         mask_mod,
         B=B,
         H=H,

@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Edited by Gabriel Amaral
 
 # Image preprocessing for Falcon Vision
 # Handles resizing, normalization, and patchification
@@ -20,6 +22,7 @@ import math
 import numpy as np
 import torch
 from PIL import Image
+from transformers import ImageProcessingMixin
 
 IMAGE_MEAN = [0.5, 0.5, 0.5]
 IMAGE_STD = [0.5, 0.5, 0.5]
@@ -86,7 +89,7 @@ def pad_along_first_dim(
     return array, mask
 
 
-class SigLinoImageProcessor:
+class SigLinoImageProcessor(ImageProcessingMixin):
     """Image processor for SigLino model."""
 
     def __init__(
@@ -99,7 +102,9 @@ class SigLinoImageProcessor:
         do_resize: bool = True,
         do_rescale: bool = True,
         do_normalize: bool = True,
+        **kwargs,
     ):
+        super().__init__(**kwargs)
         self.patch_size = patch_size
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels

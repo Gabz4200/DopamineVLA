@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Edited by Gabriel Amaral
 
 # Main model implementation for Falcon Vision Encoder
 # A pure vision transformer distilled from DINOv3 and SigLIP2
@@ -19,9 +21,14 @@ import einops as E
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn.attention.flex_attention import BlockMask
 
-from .attention import Attention, create_attention_mask
+from .attention import (
+    Attention,
+    _BlockMask,
+    create_attention_mask,
+    create_sdpa_attention_mask,
+    device_supports_flex_attention,
+)
 from .configs import SigLinoArgs
 from .moe import FeedForward, MoE
 from .rope import (
@@ -160,7 +167,7 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         freqs_cis_2d: torch.Tensor | None = None,
         pos_thw: torch.Tensor | None = None,
-        attention_masks: BlockMask | None = None,
+        attention_masks: "_BlockMask | torch.Tensor | None" = None,
         compile: bool = True,
     ) -> torch.Tensor:
         B, S, D = x.shape
@@ -221,11 +228,13 @@ class SigLino(nn.Module):
         if self.n_storage_tokens > 0:
             self.storage_tokens = nn.Parameter(torch.empty(1, self.n_storage_tokens, args.dim))
 
-        # RoPE
+        # RoPE precomputed on CPU to survive meta-device init context from Transformers
         head_dim = args.head_dim or args.dim // args.n_heads
         d = head_dim // 2
-        self.register_buffer("freqs_cis_golden", self._precompute_golden_freqs_cis(d, args))
-        self.register_buffer("freqs_cis", self._precompute_freqs_cis(d, args), persistent=False)
+        freqs_cis_golden = self._precompute_golden_freqs_cis(d, args)
+        freqs_cis = self._precompute_freqs_cis(d, args)
+        self.register_buffer("freqs_cis_golden", freqs_cis_golden)
+        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
         # Transformer layers
         self.layers = nn.ModuleDict()
@@ -273,7 +282,7 @@ class SigLino(nn.Module):
                 del self._buffers[name]
 
         # 2. Apply fn (device/dtype moves) to the rest of the model
-        ret = super()._apply(fn)
+        super()._apply(fn)
 
         # 3. Handle complex buffers manually
         for name, buf in complex_buffers.items():
@@ -338,50 +347,52 @@ class SigLino(nn.Module):
 
         return patches, spatial_shape
 
-    _cached_block_mask: BlockMask | None = None
+    _cached_block_mask: "_BlockMask | None" = None
     _cached_mask_key: tuple | None = None
     _cached_thw_pos: torch.Tensor | None = None
     _cached_thw_key: tuple | None = None
+
+    def _use_flex_attn_on_device(self, device: torch.device) -> bool:
+        return self.args.use_flex_attn and device_supports_flex_attention(device)
 
     def _build_vision_mask(
         self,
         full_mask: torch.Tensor,
         device: torch.device,
         block_size: int = 64,
-    ) -> BlockMask:
+    ) -> "_BlockMask | torch.Tensor":
         """Build attention mask using the padding mask.
 
         Args:
             full_mask: (N, S) boolean mask where True = valid, False = padding
             device: torch device
-            block_size: FlexAttention block size
+            block_size: FlexAttention block size (only used for flex path)
 
         Returns:
-            BlockMask for FlexAttention
+            _BlockMask for FlexAttention (CUDA) or 4D tensor mask (CPU)
         """
         N, S = full_mask.shape
 
-        # Cache key: shape + content hash (avoids recompiling create_block_mask
-        # on every forward when the mask is unchanged, e.g. fixed-resolution eval)
-        mask_key = (N, S, full_mask.sum().item(), device)
-        if self._cached_mask_key == mask_key and self._cached_block_mask is not None:
-            return self._cached_block_mask
+        if self._use_flex_attn_on_device(device):
+            mask_key = (N, S, full_mask.sum().item(), device)
+            if self._cached_mask_key == mask_key and self._cached_block_mask is not None:
+                return self._cached_block_mask
 
-        # Create mask matrix: attend only if BOTH q and kv are valid (non-padding)
-        # full_mask[b, i] is True if position i in batch b is valid
-        valid_q = full_mask.unsqueeze(-1)  # (N, S, 1)
-        valid_kv = full_mask.unsqueeze(-2)  # (N, 1, S)
-        mask_matrix = valid_q & valid_kv  # (N, S, S)
+            valid_q = full_mask.unsqueeze(-1)
+            valid_kv = full_mask.unsqueeze(-2)
+            mask_matrix = valid_q & valid_kv
 
-        def mask_mod(b, h, q_idx, kv_idx):
-            return mask_matrix[b, q_idx, kv_idx]
+            def mask_mod(b, h, q_idx, kv_idx):
+                return mask_matrix[b, q_idx, kv_idx]
 
-        block_mask = create_attention_mask(
-            mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size)
-        )
-        self._cached_block_mask = block_mask
-        self._cached_mask_key = mask_key
-        return block_mask
+            block_mask = create_attention_mask(
+                mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size)
+            )
+            self._cached_block_mask = block_mask
+            self._cached_mask_key = mask_key
+            return block_mask
+        else:
+            return create_sdpa_attention_mask(full_mask)
 
     def _get_thw_pos(
         self,
@@ -440,13 +451,13 @@ class SigLino(nn.Module):
         pixel_values: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
-        compile: bool = True,
+        compile: bool | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """
         Forward pass for vision encoding.
 
         Args:
-            pixel_values: Image patches (N, L, C*patch_size^2) - patches only, no CLS/register placeholders
+            pixel_values: Image patches (N, L, C*patch_size^2) - patches only, no CLS/register
             padding_mask: (N, L) mask where 1 = valid patch, 0 = padding
             spatial_shapes: Shape of each image (N, 2) with (H_patches, W_patches)
             compile: Whether to use compiled FlexAttention
@@ -456,6 +467,10 @@ class SigLino(nn.Module):
             - "output": patch features {"dinov3": ..., "siglip2": ..., "siglino": ...}
             - "summary": pooled features {"dinov3": ..., "siglip2": ..., "siglino": ...}
         """
+        # Auto-detect compile: enabled on CUDA, disabled on CPU
+        if compile is None:
+            compile = pixel_values.device.type == "cuda"
+
         # Handle raw images input
         if pixel_values.dim() == 4:
             pixel_values, spatial_shapes = self._patchify(pixel_values)

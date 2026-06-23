@@ -10,6 +10,8 @@ dependencies = [
     "ggml-python>=0.0.44",
     "matplotlib>=3.11.0",
     "numpy>=2.4.6",
+    "onnx>=1.16.0",
+    "onnxscript>=0.1.43",
     "onnxruntime>=1.26.0",
     "open-clip-torch>=3.3.0",
     "pillow>=12.2.0",
@@ -17,6 +19,7 @@ dependencies = [
     "scipy>=1.17.1",
     "siglino",
     "torch>=2.14.0.dev20260619",
+    "torchao>=0.17.0",
     "torchvision>=0.29.0.dev20260622",
     "tqdm>=4.68.3",
     "transformers>=5.12.1",
@@ -37,21 +40,20 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }
-ggml-python = { index = "ggml"}
-siglino = { git = "https://github.com/tiiuae/siglino.git" }
+torchao = { index = "pytorch" }
+ggml-python = { index = "ggml" }
+siglino = { path = "dopaminevla/models/siglino" }
 
 [tool.uv]
-environments = [
-    "sys_platform == 'linux'",
-    "sys_platform == 'darwin'",
-]
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["slow: marks tests as slow (hub downloading, large model inference)"]
 
 [tool.setuptools]
-package-dir = {"dopaminevla" = "dopaminevla"}
+package-dir = { "dopaminevla" = "dopaminevla" }
 
 [tool.ruff]
 line-length = 100

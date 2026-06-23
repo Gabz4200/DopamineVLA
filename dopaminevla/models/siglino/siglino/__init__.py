@@ -11,14 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Edited by Gabriel Amaral
 
 # Falcon Vision - Standalone Vision Encoder from Multi-Teacher Distillation
 # A pure vision model distilled from DINOv3 and SigLIP2 teachers
 
 from .configs import SigLinoArgs, siglino_configs
+from .hf_integration import SigLinoConfig, SigLinoHFModel, SigLinoPreTrainedModel
 from .image_processor import SigLinoImageProcessor
 from .model import SigLino
-from .utils import load_siglino_model
+from .utils import load_siglino_model, quantize_cpu_model
 
 __all__ = [
     "SigLino",
@@ -26,4 +29,8 @@ __all__ = [
     "siglino_configs",
     "SigLinoImageProcessor",
     "load_siglino_model",
+    "quantize_cpu_model",
+    "SigLinoConfig",
+    "SigLinoHFModel",
+    "SigLinoPreTrainedModel",
 ]

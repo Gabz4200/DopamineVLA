@@ -6,3 +6,5 @@
 **Rule number 4:** Write unit tests to ensure your code works as expected and to catch potential bugs early.
 **Rule number 5:** All code here must be device agnostic, meaning it works on GPU (Cuda) or CPU and is optimized on both scenarios.
 **Rule number 7:** Avoid the usage of "try/except" blocks for control flow. Use them only for handling exceptions that are truly exceptional. And even then, crash, dont fallback. Only exception is when handling cross platform imports or specific device code that cannot be handled by "if/else" for some reason. And if what you need is only to check if a condition is match and crash if dont, use "assert" instead of "try/except" blocks.
+**Rule number 8:** Always run "ruff check --fix" and "pytest" to detect issus and prevent regressions before committing code. If you are not sure about the issues, ask for help.
+**Rule number 9:** Always use "ruff format" to format your code before committing.

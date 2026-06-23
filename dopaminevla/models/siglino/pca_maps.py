@@ -9,23 +9,11 @@ import matplotlib
 import numpy as np
 from PIL import Image
 
-matplotlib.use("Agg")
+matplotlib.use("TkAgg")
+
 import matplotlib.pyplot as plt
 import torch
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-import torch._inductor.config
-
-torch._inductor.config.triton.unique_kernel_names = True
-torch._dynamo.config.allow_unspec_int_on_nn_module = True
-torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
-torch._inductor.config.fx_graph_cache = True
-torch._functorch.config.enable_autograd_cache = True
-torch.set_float32_matmul_precision("high")
-
-# Standalone model imports
-from siglino import load_siglino_model
+from siglino import load_siglino_model, quantize_cpu_model
 from sklearn.decomposition import PCA
 
 
@@ -40,22 +28,23 @@ def extract_patch_features(
     model,
     processor,
     images: List[Image.Image],
-    device: str = "cuda",
+    device: torch.device | None = None,
     max_num_patches: int = 256,
 ):
-    """Extract patch features from images using the standalone model."""
+    if device is None:
+        device = next(model.parameters()).device
+
+    dtype = next(model.parameters()).dtype
     features_per_image = []
 
     for image in images:
-        # Use the proper image processor
         processed = processor(
             image,
             max_num_patches=max_num_patches,
             n_storage_tokens=model.n_storage_tokens,
             pad=False,
         )
-
-        pixel_values = processed["pixel_values"].to(device, dtype=model.dtype)
+        pixel_values = processed["pixel_values"].to(device, dtype=dtype)
         padding_mask = processed["padding_mask"].to(device)
         spatial_shapes = processed["spatial_shape"].to(device)
 
@@ -66,15 +55,13 @@ def extract_patch_features(
             pixel_values=pixel_values,
             padding_mask=padding_mask,
             spatial_shapes=spatial_shapes,
-            compile=True,
         )
 
         patch_feats = out["patch_features"]
 
-        # Features are (N, L, D) - squeeze batch dimension
-        feats_siglip = patch_feats["siglip2"].squeeze(0)  # (L, D)
-        feats_dinov3 = patch_feats["dinov3"].squeeze(0)  # (L, D)
-        feats_siglino = patch_feats["siglino"].squeeze(0)  # (L, D)
+        feats_siglip = patch_feats["siglip2"].squeeze(0)
+        feats_dinov3 = patch_feats["dinov3"].squeeze(0)
+        feats_siglino = patch_feats["siglino"].squeeze(0)
 
         features_per_image.append(
             {
@@ -105,17 +92,14 @@ def render_pca_image(
     save_path: str,
     title: Optional[str] = None,
 ):
-    """Render PCA visualizations for available feature types."""
     projected_siglino, projected_siglip, projected_dinov3 = projected_L3
 
     H, W = grid_hw
 
     def create_pca_grid(projected_features):
-
         grid_hw3 = projected_features.reshape(H, W, 3).astype(np.float32)
-        # Sigmoid(2x) for vibrant colors
+        grid_hw3 = np.nan_to_num(grid_hw3, nan=0.0, posinf=1.0, neginf=0.0)
         grid_hw3 = 1.0 / (1.0 + np.exp(-2.0 * grid_hw3))
-
         return grid_hw3
 
     viz_items = []
@@ -157,35 +141,55 @@ def render_pca_image(
 def load_model_and_processor(
     ckpt_path: str,
     config_name: str,
-    device: str = "cuda",
+    device: str | None = None,
     min_pixels: int = 128 * 128,
     max_pixels: int = 256 * 256,
 ):
-    """Load the standalone Falcon Vision model and image processor."""
-    # Update config with register count if it exists
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
     print(f"Loading model with config: {config_name}")
 
-    # Load model using the package function
-    model, processor = load_siglino_model(
-        checkpoint_path=ckpt_path,
-        config_name=config_name,
-        device=device,
-        max_pixels=max_pixels,
+    is_hub_id = (
+        ckpt_path
+        and "/" in ckpt_path
+        and not os.path.isdir(ckpt_path)
+        and not os.path.isfile(ckpt_path)
     )
 
-    # Ensure model is in bfloat16
-    model = model.to(torch.bfloat16)
+    if is_hub_id:
+        print(f"Loading from HuggingFace Hub: {ckpt_path}")
+        from siglino import SigLinoHFModel
 
+        model = SigLinoHFModel.from_pretrained(ckpt_path)
+        model = model.to(device=device)
+
+        from .siglino.image_processor import SigLinoImageProcessor
+
+        processor = SigLinoImageProcessor(
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+    else:
+        model, processor = load_siglino_model(
+            checkpoint_path=ckpt_path,
+            config_name=config_name,
+            device=device,
+            max_pixels=max_pixels,
+        )
+
+    # Apply INT8 dynamic quantization for CPU inference
+    if device == "cpu" or (isinstance(device, torch.device) and device.type == "cpu"):
+        model = quantize_cpu_model(model)
+
+    model = model.eval()
     return model, processor
 
 
 def sample_jpg_images(input_dir: str, num_samples: int = 10) -> List[str]:
-    """Sample JPG images from input directory."""
     jpg_pattern = os.path.join(input_dir, "*.jpg")
     jpg_files = glob.glob(jpg_pattern)
 
-    # Also try PNG
     png_pattern = os.path.join(input_dir, "*.png")
     jpg_files.extend(glob.glob(png_pattern))
 
@@ -205,10 +209,9 @@ def process_single_image(
     output_dir: str,
     model,
     processor,
-    device: str,
+    device: torch.device,
     max_num_patches: int = 256,
 ) -> None:
-    """Process a single image and save the visualization."""
     image = load_image(image_path)
 
     features_info = extract_patch_features(
@@ -222,14 +225,15 @@ def process_single_image(
     H, W = info["grid_hw"]
     num_valid = H * W
 
-    # Extract only valid (non-padding) features
     feats_LD_siglip = info["features_siglip"][:num_valid]
     feats_LD_dinov3 = info["features_dinov3"][:num_valid]
     feats_LD_siglino = info["features_siglino"][:num_valid]
 
-    print(
-        f"Feature shapes (valid only) - siglip: {feats_LD_siglip.shape}, dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
+    msg = (
+        f"Feature shapes - siglip: {feats_LD_siglip.shape}, "
+        f"dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
     )
+    print(msg)
 
     projected_all_siglip = fit_and_project_pca(feats_LD_siglip)
     projected_all_dinov3 = fit_and_project_pca(feats_LD_dinov3)
@@ -240,7 +244,8 @@ def process_single_image(
     output_path = os.path.join(output_dir, output_filename)
 
     print(
-        f"Projected shapes - siglino: {projected_all_siglino.shape}, siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
+        f"Projected shapes - siglino: {projected_all_siglino.shape}, "
+        f"siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
     )
     render_pca_image(
         image_rgb=image,
@@ -255,18 +260,19 @@ def process_single_image(
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize PCA of SigLino patch features")
-    parser.add_argument("--ckpt_path", type=str, required=True, help="Path to checkpoint")
+    parser.add_argument(
+        "--ckpt_path", type=str, default=None, help="Path to checkpoint or HF hub model ID"
+    )
     parser.add_argument("--input_dir", type=str, required=True, help="Directory containing images")
     parser.add_argument("--output_path", type=str, required=True, help="Base output directory")
     parser.add_argument("--num_samples", type=int, default=10, help="Number of images to sample")
     parser.add_argument("--config_name", type=str, default="siglino-0.3B")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default=None, help="Device (default: auto-detect)")
     parser.add_argument("--max_num_patches", type=int, default=256)
     args = parser.parse_args()
 
-    output_dir = os.path.join(args.output_path, "pca_visualizations")
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Output directory: {output_dir}")
+    os.makedirs(args.output_path, exist_ok=True)
+    print(f"Output directory: {args.output_path}")
 
     sampled_images = sample_jpg_images(args.input_dir, args.num_samples)
 
@@ -279,19 +285,22 @@ def main():
         max_pixels=(args.max_num_patches**0.5 * 16) ** 2,
     )
 
+    device = next(model.parameters()).device
+    print(f"Running on: {device}")
+
     print(f"Processing {len(sampled_images)} images...")
     for i, image_path in enumerate(sampled_images, 1):
         print(f"Processing image {i}/{len(sampled_images)}: {os.path.basename(image_path)}")
         process_single_image(
             image_path=image_path,
-            output_dir=output_dir,
+            output_dir=args.output_path,
             model=model,
             processor=processor,
-            device=args.device,
+            device=device,
             max_num_patches=args.max_num_patches,
         )
 
-    print(f"Completed! All visualizations saved in: {output_dir}")
+    print(f"Completed! All visualizations saved in: {args.output_path}")
 
 
 if __name__ == "__main__":

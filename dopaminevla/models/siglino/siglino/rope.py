@@ -12,19 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# RoPE (Rotary Position Embedding) implementation for Falcon Vision
-# Includes 1D RoPE and 2D Golden RoPE for vision tokens
-
 import einops as E
 import torch
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     """Precompute frequency tensor for 1D rotary embeddings."""
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)
-    freqs = torch.outer(t, freqs).float()
-    return torch.polar(torch.ones_like(freqs), freqs)
+    # Compute on CPU explicitly to survive meta-device init context
+    if end > 0:
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device="cpu")[: (dim // 2)].float() / dim))
+        t_cpu = torch.arange(end, device="cpu")
+        freqs = torch.outer(t_cpu, freqs).float()
+        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+        return freqs_cis
+    else:
+        return torch.tensor([], dtype=torch.complex64, device="cpu")
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -89,8 +91,8 @@ def _phi(m: int) -> float:
 
 def make_directions(n: int, d: int) -> torch.Tensor:
     g = _phi(d)
-    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64)
-    i = torch.arange(1, n + 1, dtype=torch.float64).unsqueeze(1)
+    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device="cpu")
+    i = torch.arange(1, n + 1, dtype=torch.float64, device="cpu").unsqueeze(1)
     z = torch.fmod(i * alpha, 1.0)
     directions = torch.erfinv(2.0 * z - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
@@ -108,12 +110,18 @@ def precompute_golden_freqs_cis(
     """Precompute golden ratio based 2D frequencies for vision tokens."""
     n_freqs = head_dim // 2
     n_zero_freqs = round(p_zero_freqs * n_freqs)
-    omega_F = torch.cat(
-        (
-            torch.zeros(n_zero_freqs),
-            min_freq * (max_freq / min_freq) ** torch.linspace(0, 1, n_freqs - n_zero_freqs),
-        )
-    )
+
+    # Compute on CPU explicitly to survive meta-device init context
+    # from Transformers from_pretrained(). register_buffer moves to correct device.
+    zeros = torch.zeros(n_zero_freqs, device="cpu")
+
+    if n_freqs - n_zero_freqs > 0:
+        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device="cpu")
+        scaled_vals = min_freq * (max_freq / min_freq) ** linspace_vals
+        omega_F = torch.cat((zeros, scaled_vals))
+    else:
+        omega_F = zeros
+
     directions_hFP = make_directions(n_heads * n_freqs, pos_dim).reshape(n_heads, n_freqs, pos_dim)
     return directions_hFP * omega_F.reshape(n_freqs, 1)
 
