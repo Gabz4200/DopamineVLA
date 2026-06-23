@@ -1,0 +1,54 @@
+[project]
+name = "dopaminevla"
+version = "0.1.0"
+description = "Experimental setup of dopamine on VLAs, which consists on realtime Reinforcement Learning with eplicit decay "
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ggml-python>=0.0.44",
+    "matplotlib>=3.11.0",
+    "numpy>=2.4.6",
+    "pillow>=12.2.0",
+    "siglino",
+    "torch>=2.14.0.dev20260619",
+    "torchvision>=0.29.0.dev20260622",
+    "transformers>=5.12.1",
+    "trl>=1.6.0",
+    "unsloth>=2025.7.2",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "ggml"
+url = "https://abetlen.github.io/ggml-python/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+ggml-python = { index = "ggml"}
+siglino = { git = "https://github.com/tiiuae/siglino.git" }
+
+[tool.uv]
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'darwin'",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"dopaminevla" = "dopaminevla"}
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
