@@ -28,7 +28,7 @@ class SigLinoArgs:
     n_layers: int = 18
     n_heads: int = 12
     head_dim: int | None = 128
-    n_kv_heads: int | None = 4
+    n_kv_heads: int | None = None
 
     # MoE configuration
     moe_dim: int = 768

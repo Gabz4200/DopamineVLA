@@ -1,5 +1,6 @@
 # Project Guidelines
 
+**Rule number 0:** Always use the simplest correct (standart) solution to solve a problem. Avoid over-engineering and unnecessary complexity. But also avoid "dumb" solutions that are not maintainable or scalable. Always consider the long-term implications of your code and strive for a balance between simplicity and functionality.
 **Rule number 1:** Always write clear and concise code. Avoid unnecessary complexity.
 **Rule number 2:** Follow consistent naming conventions for variables, functions, and classes.
 **Rule number 3:** Document your code with docstrings to explain the purpose and functionality.

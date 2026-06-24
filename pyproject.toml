@@ -17,7 +17,6 @@ dependencies = [
     "pillow",
     "scikit-learn",
     "scipy",
-    "siglino",
     "torch",
     "torchao",
     "torchvision",
@@ -45,7 +44,6 @@ torch = { index = "pytorch" }
 torchvision = { index = "pytorch" }
 torchao = { index = "pytorch" }
 ggml-python = { index = "ggml" }
-siglino = { path = "dopaminevla/models/siglino" }
 
 [tool.uv]
 environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]

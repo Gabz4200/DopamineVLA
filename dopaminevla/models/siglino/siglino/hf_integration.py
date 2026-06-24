@@ -41,7 +41,7 @@ class SigLinoConfig(PretrainedConfig):
         num_hidden_layers: int = 18,
         num_attention_heads: int = 12,
         head_dim: int | None = 128,
-        num_key_value_heads: int | None = 4,
+        num_key_value_heads: int | None = None,
         moe_dim: int = 768,
         moe_num_experts: int = 16,
         moe_num_shared_experts: int = 1,
@@ -49,6 +49,7 @@ class SigLinoConfig(PretrainedConfig):
         moe_score_before_experts: bool = False,
         moe_route_norm: bool = True,
         moe_route_scale: float = 0.8633,
+        moe_score_func: Literal["softmax", "sigmoid"] = "sigmoid",
         moe_activation: Literal["silu", "relu2"] = "silu",
         first_n_layers_dense: int = 0,
         ffn_dim: int | None = None,
@@ -107,6 +108,7 @@ class SigLinoConfig(PretrainedConfig):
                 moe_score_before_experts = moe_dict.get("score_before_experts", moe_score_before_experts)
                 moe_route_norm = moe_dict.get("route_norm", moe_route_norm)
                 moe_route_scale = moe_dict.get("route_scale", moe_route_scale)
+                moe_score_func = moe_dict.get("score_func", moe_score_func)
                 moe_activation = moe_dict.get("activation", moe_activation)
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
@@ -120,6 +122,7 @@ class SigLinoConfig(PretrainedConfig):
         self.moe_score_before_experts = moe_score_before_experts
         self.moe_route_norm = moe_route_norm
         self.moe_route_scale = moe_route_scale
+        self.moe_score_func = moe_score_func
         self.moe_activation = moe_activation
         self.first_n_layers_dense = first_n_layers_dense
         self.ffn_dim = ffn_dim
@@ -155,6 +158,7 @@ class SigLinoConfig(PretrainedConfig):
                 num_experts=self.moe_num_experts,
                 num_shared_experts=self.moe_num_shared_experts,
                 top_k=self.moe_top_k,
+                score_func=self.moe_score_func,
                 score_before_experts=self.moe_score_before_experts,
                 route_norm=self.moe_route_norm,
                 route_scale=self.moe_route_scale,
@@ -209,6 +213,7 @@ class SigLinoConfig(PretrainedConfig):
             moe_score_before_experts=args.moe_args.score_before_experts,
             moe_route_norm=args.moe_args.route_norm,
             moe_route_scale=args.moe_args.route_scale,
+            moe_score_func=args.moe_args.score_func,
             moe_activation=args.moe_args.activation,
             first_n_layers_dense=args.first_n_layers_dense,
             ffn_dim=args.ffn_dim,
@@ -242,7 +247,8 @@ class SigLinoPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["TransformerBlock", "Attention", "MoE", "FeedForward"]
     _keys_to_ignore_on_load_missing = [
-        "model.freqs_cis",  # non-persistent buffer, recomputed on forward
+        "model.freqs_cis",  # non-persistent buffer, recomputed via _post_init
+        "model.freqs_cis_golden",  # precomputed in _post_init
     ]
 
     def _init_weights(self, module):
@@ -260,6 +266,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         super().__init__(config)
         siglino_args = config.to_siglino_args()
         self.model: SigLino = SigLino(siglino_args)
+        self.model.init_weights()  # Initialize empty params, calls _post_init for RoPE buffers
         self.post_init()
 
     def forward(

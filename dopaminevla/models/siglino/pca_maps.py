@@ -6,23 +6,30 @@ import random
 from typing import List, Optional, Tuple
 
 import matplotlib
-import numpy as np
-from PIL import Image
-
-matplotlib.use("TkAgg")
-
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from PIL import Image
 from sklearn.decomposition import PCA
 
-from .siglino import load_siglino_model, quantize_cpu_model
-from .siglino.model import SigLinoFeatures
+from dopaminevla.models.siglino.siglino import load_siglino_model, quantize_cpu_model
+from dopaminevla.models.siglino.siglino.model import SigLinoFeatures
+
+matplotlib.use("TkAgg")
 
 
 def load_image(path: str) -> Image.Image:
     img = Image.open(path).convert("RGB")
     print(f"Image size: {img.size}")
     return img
+
+
+def _get_n_storage_tokens(model) -> int:
+    """Get n_storage_tokens from model, handling SigLinoHFModel wrapper."""
+    if hasattr(model, "n_storage_tokens"):
+        return model.n_storage_tokens
+    # SigLinoHFModel wraps SigLino as self.model
+    return model.model.n_storage_tokens
 
 
 @torch.inference_mode()
@@ -43,7 +50,7 @@ def extract_patch_features(
         processed = processor(
             image,
             max_num_patches=max_num_patches,
-            n_storage_tokens=model.n_storage_tokens,
+            n_storage_tokens=_get_n_storage_tokens(model),
             pad=False,
         )
         pixel_values = processed["pixel_values"].to(device, dtype=dtype)
@@ -154,15 +161,20 @@ def load_model_and_processor(
 
     if is_hub_id:
         print(f"Loading from HuggingFace Hub: {ckpt_path}")
-        from siglino import SigLinoHFModel
+        # Hub checkpoints are bare SigLino (no HF wrapper prefix), so download
+        # the checkpoint and load via load_siglino_model (bare SigLino).
+        from huggingface_hub import hf_hub_download
 
-        model = SigLinoHFModel.from_pretrained(ckpt_path)
-        model = model.to(device=device)
+        # Try safetensors first, fall back to .bin
+        try:
+            ckpt_file = hf_hub_download(repo_id=ckpt_path, filename="model.safetensors")
+        except Exception:
+            ckpt_file = hf_hub_download(repo_id=ckpt_path, filename="pytorch_model.bin")
 
-        from .siglino.image_processor import SigLinoImageProcessor
-
-        processor = SigLinoImageProcessor(
-            min_pixels=min_pixels,
+        model, processor = load_siglino_model(
+            checkpoint_path=ckpt_file,
+            config_name=config_name,
+            device=device,
             max_pixels=max_pixels,
         )
     else:
@@ -204,9 +216,11 @@ def process_single_image(
     output_dir: str,
     model,
     processor,
-    device: torch.device,
+    device: str | torch.device | None = None,
     max_num_patches: int = 256,
 ) -> None:
+    if device is not None and not isinstance(device, torch.device):
+        device = torch.device(device)
     image = load_image(image_path)
 
     features_info = extract_patch_features(

@@ -6,6 +6,6 @@
 > The reason I stopped is that I am still not smart enough and I want to train my Brain to be smarter and not outsource my thinking in any step of the process.
 > I was used to use my mind to idealize the project and delegate the code itself to AI Agents, but I realized that I was not learning as much as I could
 > and I was not developing my own skills. So I decided to stop using AI Agents and focus on my own learning and development.
-> I might also use AI for writing commit messages, but I am trying to stop that habit too.
+> I might also use AI for writing commit messages, but I am trying to stop that habit too. But this one is harder to quit.
 
 Experimental setup of "dopamine" on VLAs, which consists on realtime Reinforcement Learning with eplicit decay

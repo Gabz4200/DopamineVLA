@@ -265,6 +265,13 @@ class SigLino(nn.Module):
         for param in self.siglip2_multihead_attention_pooling_head.parameters():
             param.requires_grad = False
 
+        # Cache for block masks (instance-level, not shared across instances)
+        self._cached_block_mask: BlockMask | None = None
+        self._cached_mask_key: tuple | None = None
+
+        # Precompute RoPE buffers on CPU (survives meta-device init context)
+        self._post_init()
+
     def _precompute_freqs_cis(self, head_dim: int, args: SigLinoArgs) -> torch.Tensor:
         return precompute_freqs_cis(head_dim, args.max_seq_len, args.rope_theta)
 
@@ -314,6 +321,8 @@ class SigLino(nn.Module):
         return self
 
     def init_weights(self, buffer_device: torch.device | None = None):
+        if self.freqs_cis is None:
+            self._post_init()
         buffer_device = buffer_device or self.freqs_cis.device
 
         if self.img_projector is not None:
@@ -356,11 +365,6 @@ class SigLino(nn.Module):
         spatial_shape = torch.tensor([[h, w]] * N, device=images.device)
 
         return patches, spatial_shape
-
-    _cached_block_mask: BlockMask | None = None
-    _cached_mask_key: tuple | None = None
-    _cached_thw_pos: torch.Tensor | None = None
-    _cached_thw_key: tuple | None = None
 
     def _use_flex_attn_on_device(self, device: torch.device) -> bool:
         return self.args.use_flex_attn and device_supports_flex_attention(device)
@@ -409,50 +413,51 @@ class SigLino(nn.Module):
         spatial_shapes: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
-        """Compute position encodings for 2D golden RoPE."""
+        """Compute position encodings for 2D golden RoPE.
+
+        Patch-index approach: uses the sequence position j (0..L-1) to derive
+        row = j // W, col = j %% W per image. Avoids any data-dependent tensor sizes
+        (no torch.arange(max_H)), making it compatible with torch.export ONNX.
+        """
         N = batch_size
         R = 1 + self.n_storage_tokens  # CLS + registers
         S = R + num_patches_per_image  # Total sequence per image
 
-        # Cache: reuse when batch size and spatial shapes are unchanged
-        thw_key = (N, num_patches_per_image, device)
-        if self._cached_thw_key == thw_key and self._cached_thw_pos is not None:
-            return self._cached_thw_pos.clone()
+        H_img = spatial_shapes[:, 0]  # (N,)
+        W_img = spatial_shapes[:, 1]  # (N,)
 
         tpos = torch.zeros((N, S), dtype=torch.float32, device=device)
-        hpos = torch.zeros((N, S), dtype=torch.float32, device=device)
-        wpos = torch.zeros((N, S), dtype=torch.float32, device=device)
+        hpos = torch.full((N, S), float("nan"), dtype=torch.float32, device=device)
+        wpos = torch.full((N, S), float("nan"), dtype=torch.float32, device=device)
 
-        # Patch positions start after CLS and registers
-        for n in range(N):
-            H, W = spatial_shapes[n].tolist()
+        # Patch index: (1, L) — size determined by input shape, not data values
+        j = torch.arange(num_patches_per_image, device=device).unsqueeze(0)  # (1, L)
 
-            # Compute normalized positions
-            h_coords = torch.arange(H, device=device).float()
-            w_coords = torch.arange(W, device=device).float()
+        # Per-image row/col: (N, L)
+        h_idx = j // W_img.unsqueeze(-1)  # (N, L)
+        w_idx = j % W_img.unsqueeze(-1)  # (N, L)
 
-            xlim = (W / H) ** 0.5
-            ylim = (H / W) ** 0.5
+        # Per-image normalization factors: (N, 1)
+        H_f = H_img.float().clamp(min=1).unsqueeze(-1)
+        W_f = W_img.float().clamp(min=1).unsqueeze(-1)
+        ylim = (H_f / W_f).sqrt()
+        xlim = (W_f / H_f).sqrt()
 
-            h_norm = -ylim + 2 * ylim * h_coords / max(H - 1, 1)
-            w_norm = -xlim + 2 * xlim * w_coords / max(W - 1, 1)
+        h_denom = (H_f - 1).clamp(min=1)
+        w_denom = (W_f - 1).clamp(min=1)
 
-            # Fill patch positions
-            for i in range(H):
-                for j in range(W):
-                    idx = R + i * W + j
-                    if idx < S:
-                        hpos[n, idx] = h_norm[i]
-                        wpos[n, idx] = w_norm[j]
+        # Normalized coords per patch: (N, L)
+        h_norm = -ylim + 2 * ylim * h_idx.float() / h_denom
+        w_norm = -xlim + 2 * xlim * w_idx.float() / w_denom
 
-            # Set NaN for non-patch positions
-            hpos[n, :R] = float("nan")
-            wpos[n, :R] = float("nan")
+        # Validity mask: patches whose row/col exceed actual image dims
+        valid_mask = (h_idx < H_img.unsqueeze(-1)) & (w_idx < W_img.unsqueeze(-1))  # (N, L)
 
-        result = torch.stack([tpos, hpos, wpos], dim=0)  # (3, N, S)
-        self._cached_thw_pos = result
-        self._cached_thw_key = thw_key
-        return result
+        # Write into sequence positions R..S-1, NaN for invalid patches
+        hpos[:, R:] = torch.where(valid_mask, h_norm, float("nan"))
+        wpos[:, R:] = torch.where(valid_mask, w_norm, float("nan"))
+
+        return torch.stack([tpos, hpos, wpos], dim=0)  # (3, N, S) — rearranged to (N, S, 3) in forward
 
     def forward(
         self,
@@ -511,10 +516,6 @@ class SigLino(nn.Module):
         cls_reg_mask = torch.ones((N, R), dtype=padding_mask.dtype, device=device)
         full_mask = torch.cat([cls_reg_mask, padding_mask], dim=1)  # (N, S)
         full_mask_bool = full_mask.bool()
-
-        # Apply input normalization if enabled
-        # if self.args.use_tok_norm:
-        #     h_NSD = F.rms_norm(h_NSD, (h_NSD.size(-1),))
 
         # Build attention mask using padding mask
         block_mask = self._build_vision_mask(full_mask_bool, device)
