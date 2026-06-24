@@ -3,7 +3,7 @@ import argparse
 import glob
 import os
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TypedDict
 
 import matplotlib
 import numpy as np
@@ -23,6 +23,13 @@ def load_image(path: str) -> Image.Image:
     return img
 
 
+class SigLinoFeatures(TypedDict):
+    features_siglip: torch.Tensor
+    features_dinov3: torch.Tensor
+    features_siglino: torch.Tensor
+    grid_hw: Tuple[int, int]
+
+
 @torch.inference_mode()
 def extract_patch_features(
     model,
@@ -30,12 +37,12 @@ def extract_patch_features(
     images: List[Image.Image],
     device: torch.device | None = None,
     max_num_patches: int = 256,
-):
+) -> List[SigLinoFeatures]:
     if device is None:
         device = next(model.parameters()).device
 
     dtype = next(model.parameters()).dtype
-    features_per_image = []
+    features_per_image: List[SigLinoFeatures] = []
 
     for image in images:
         processed = processor(
@@ -261,7 +268,10 @@ def process_single_image(
 def main():
     parser = argparse.ArgumentParser(description="Visualize PCA of SigLino patch features")
     parser.add_argument(
-        "--ckpt_path", type=str, default=None, help="Path to checkpoint or HF hub model ID"
+        "--ckpt_path",
+        type=str,
+        default="tiiuae/siglino-30M",
+        help="Path to checkpoint or HF hub model ID",
     )
     parser.add_argument("--input_dir", type=str, required=True, help="Directory containing images")
     parser.add_argument("--output_path", type=str, required=True, help="Base output directory")
@@ -270,6 +280,9 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Device (default: auto-detect)")
     parser.add_argument("--max_num_patches", type=int, default=256)
     args = parser.parse_args()
+
+    if not args.device:
+        args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     os.makedirs(args.output_path, exist_ok=True)
     print(f"Output directory: {args.output_path}")
@@ -285,8 +298,7 @@ def main():
         max_pixels=(args.max_num_patches**0.5 * 16) ** 2,
     )
 
-    device = next(model.parameters()).device
-    print(f"Running on: {device}")
+    print(f"Running on: {args.device}")
 
     print(f"Processing {len(sampled_images)} images...")
     for i, image_path in enumerate(sampled_images, 1):
@@ -296,7 +308,7 @@ def main():
             output_dir=args.output_path,
             model=model,
             processor=processor,
-            device=device,
+            device=args.device,
             max_num_patches=args.max_num_patches,
         )
 

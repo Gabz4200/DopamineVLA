@@ -159,10 +159,13 @@ venv.bak/
 
 # custom
 **/.opencode/**
-**/.opencode
+.opencode
+
 **/.pytest_tmp/**
-**/.pytest_tmp
-**/.vscode
+.pytest_tmp
+
+**/.vscode/**
+.vscode
 
 # Spyder project settings
 .spyderproject

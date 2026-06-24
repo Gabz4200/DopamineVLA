@@ -397,7 +397,7 @@ def main():
             f"Ensemble (entropy-weighted) CUB Test Accuracy: {accuracy_ensemble:.4f} ({num_correct_ensemble}/{num_samples})"
         )
 
-        ckpt_basename = args.ckpt_path.split("/")[-1] or args.ckpt_path.split("/")[-2]
+        args.ckpt_path.split("/")[-1] or args.ckpt_path.split("/")[-2]
 
         accuracy_results = {
             "checkpoint_path": args.ckpt_path,

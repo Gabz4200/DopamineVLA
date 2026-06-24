@@ -31,8 +31,6 @@ def adapt_patches_with_dinov3_head(image_summary, patch_tokens_list, dinotxt):
     if not hasattr(dinotxt, "visual_model") or not hasattr(dinotxt.visual_model, "head"):
         return None
     head = dinotxt.visual_model.head
-    device = image_summary.device
-    dtype = image_summary.dtype
 
     image_embeds = []
     for i, tokens in enumerate(patch_tokens_list):

@@ -83,7 +83,6 @@ def main():
         device=args.device,
         max_pixels_sqrt=args.max_pixels_sqrt,
     )
-    device = model.device
 
     # Load dinotxt via torch.hub
     print("Loading dinotxt (DINOv3) via torch.hub ...")

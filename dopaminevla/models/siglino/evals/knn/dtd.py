@@ -242,7 +242,7 @@ def main():
         print(f"SigLIP2 kNN Accuracy: {acc_siglip:.4f}")
         print(f"Ensemble kNN Accuracy: {acc_ens:.4f}")
 
-        ckpt_basename = args.ckpt_path.split("/")[-1]
+        args.ckpt_path.split("/")[-1]
         results = {
             "accuracy_dinov3": acc_dino,
             "accuracy_siglip2": acc_siglip,

@@ -196,7 +196,7 @@ def main():
         pin_memory=True,
         collate_fn=collate,
     )
-    test_loader = DataLoader(
+    DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,

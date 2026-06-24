@@ -114,7 +114,7 @@ def _distributed_topk(
     distributed: bool,
 ):
     if distributed:
-        rank = dist.get_rank()
+        dist.get_rank()
         world_size = dist.get_world_size()
         max_queries = torch.tensor(queries.shape[0], dtype=torch.int64, device=queries.device)
         dist.all_reduce(max_queries, dist.ReduceOp.MAX)

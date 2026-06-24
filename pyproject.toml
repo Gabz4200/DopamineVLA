@@ -5,26 +5,26 @@ description = "Experimental setup of dopamine on VLAs, which consists on realtim
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "datasets>=5.0.0",
-    "einops>=0.8.2",
-    "ggml-python>=0.0.44",
-    "matplotlib>=3.11.0",
-    "numpy>=2.4.6",
-    "onnx>=1.16.0",
-    "onnxscript>=0.1.43",
-    "onnxruntime>=1.26.0",
-    "open-clip-torch>=3.3.0",
-    "pillow>=12.2.0",
-    "scikit-learn>=1.9.0",
-    "scipy>=1.17.1",
+    "datasets",
+    "einops",
+    "ggml-python",
+    "matplotlib",
+    "numpy",
+    "onnx",
+    "onnxscript",
+    "onnxruntime",
+    "open-clip-torch",
+    "pillow",
+    "scikit-learn",
+    "scipy",
     "siglino",
-    "torch>=2.14.0.dev20260619",
-    "torchao>=0.17.0",
-    "torchvision>=0.29.0.dev20260622",
-    "tqdm>=4.68.3",
-    "transformers>=5.12.1",
-    "trl>=1.6.0",
-    "unsloth>=2025.7.2",
+    "torch",
+    "torchao",
+    "torchvision",
+    "tqdm",
+    "transformers",
+    "trl",
+    "unsloth",
 ]
 
 [[tool.uv.index]]
@@ -61,3 +61,9 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
