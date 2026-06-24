@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Edited by Gabriel Amaral
 
 # HuggingFace Transformers integration for SigLino
 # Provides PreTrainedModel/PreTrainedConfig wrappers for quantization, device_map, Hub save/load
+
+from typing import Literal
 
 import torch
 from transformers import PretrainedConfig, PreTrainedModel
@@ -49,7 +49,7 @@ class SigLinoConfig(PretrainedConfig):
         moe_score_before_experts: bool = False,
         moe_route_norm: bool = True,
         moe_route_scale: float = 0.8633,
-        moe_activation: str = "relu2",
+        moe_activation: Literal["silu", "relu2"] = "silu",
         first_n_layers_dense: int = 0,
         ffn_dim: int | None = None,
         activation: str = "silu",
@@ -104,13 +104,10 @@ class SigLinoConfig(PretrainedConfig):
                 moe_num_experts = moe_dict.get("num_experts", moe_num_experts)
                 moe_num_shared_experts = moe_dict.get("num_shared_experts", moe_num_shared_experts)
                 moe_top_k = moe_dict.get("top_k", moe_top_k)
-                moe_score_before_experts = moe_dict.get(
-                    "score_before_experts", moe_score_before_experts
-                )
+                moe_score_before_experts = moe_dict.get("score_before_experts", moe_score_before_experts)
                 moe_route_norm = moe_dict.get("route_norm", moe_route_norm)
                 moe_route_scale = moe_dict.get("route_scale", moe_route_scale)
                 moe_activation = moe_dict.get("activation", moe_activation)
-        super().__init__(**kwargs)
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
@@ -143,6 +140,7 @@ class SigLinoConfig(PretrainedConfig):
         self.teachers = list(teachers)
         self.teachers_dim = list(teachers_dim)
         self.use_flex_attn = use_flex_attn
+        super().__init__(**kwargs)
 
     def to_siglino_args(self) -> SigLinoArgs:
         """Convert this HF config to a SigLinoArgs dataclass."""
@@ -261,7 +259,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
     def __init__(self, config: SigLinoConfig):
         super().__init__(config)
         siglino_args = config.to_siglino_args()
-        self.model = SigLino(siglino_args)
+        self.model: SigLino = SigLino(siglino_args)
         self.post_init()
 
     def forward(
@@ -278,24 +276,6 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
             spatial_shapes=spatial_shapes,
             compile=compile_,
         )
-
-    def state_dict(self, *args, **kwargs):
-        return super().state_dict(*args, **kwargs)
-
-    def load_state_dict(self, state_dict, *args, **kwargs):
-        keys = list(state_dict.keys())
-        if keys and not keys[0].startswith("model."):
-            state_dict = {f"model.{k}": v for k, v in state_dict.items()}
-        return super().load_state_dict(state_dict, *args, **kwargs)
-
-    @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs) -> "SigLinoHFModel":
-        gguf_file = kwargs.pop("gguf_file", None)
-        if gguf_file is not None:
-            kwargs["gguf_file"] = gguf_file
-        result = super().from_pretrained(pretrained_model_name_or_path, **kwargs)
-        assert isinstance(result, cls), f"Expected {cls.__name__}, got {type(result)}"
-        return result
 
     def get_input_embeddings(self):
         return self.model.img_projector
@@ -318,9 +298,10 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
 
             def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, ...]:
                 N, C, H, W = pixel_values.shape
-                ph = core.patch_size
+                ph = self.core.patch_size
                 h, w = H // ph, W // ph
-                spatial_shapes = torch.tensor([[h, w]] * N, device=pixel_values.device)
+                base_shape = torch.tensor([[h, w]], device=pixel_values.device)
+                spatial_shapes = base_shape.expand(N, 2)
 
                 out = core(pixel_values=pixel_values, spatial_shapes=spatial_shapes)
                 pf = out["patch_features"]
@@ -349,14 +330,13 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         model.eval()
 
         wrapper = model._get_onnx_wrapper()
-
         dummy_input = torch.randn(1, 3, 224, 224)
 
         with torch.no_grad():
             torch.onnx.export(
-                wrapper,
-                dummy_input,
-                output_path,
+                model=wrapper,
+                args=(dummy_input,),
+                f=output_path,
                 opset_version=onnx_export_kwargs.get("opset_version", 17),
                 do_constant_folding=onnx_export_kwargs.get("do_constant_folding", True),
                 input_names=["pixel_values"],

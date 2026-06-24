@@ -51,9 +51,7 @@ def load_siglino_model(
     if config_name in siglino_configs:
         args = siglino_configs[config_name]
     else:
-        raise ValueError(
-            f"Unknown config: {config_name}. Available: {list(siglino_configs.keys())}"
-        )
+        raise ValueError(f"Unknown config: {config_name}. Available: {list(siglino_configs.keys())}")
 
     # Create model
     model = SigLino(args)

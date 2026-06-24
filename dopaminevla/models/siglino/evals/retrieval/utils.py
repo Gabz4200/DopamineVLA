@@ -146,9 +146,7 @@ def extract_embeddings_multi(
     # -------------------------------------------------------------------------
     print("Extracting text embeddings (dinotxt)...")
     text_dataset = SimpleListDataset(texts)
-    text_loader = DataLoader(
-        text_dataset, batch_size=bs, shuffle=False, num_workers=num_workers, collate_fn=lambda x: x
-    )
+    text_loader = DataLoader(text_dataset, batch_size=bs, shuffle=False, num_workers=num_workers, collate_fn=lambda x: x)
 
     text_embeddings_dino = []
     for batch_texts in tqdm(text_loader, desc="DINOtxt texts"):
@@ -164,9 +162,7 @@ def extract_embeddings_multi(
     # 2. Text embeddings with SigLIP2
     # -------------------------------------------------------------------------
     print("Extracting text embeddings (SigLIP2)...")
-    siglip_text_tower = (
-        AutoModel.from_pretrained(siglip2_model_name).text_model.to(device).to(torch.bfloat16)
-    )
+    siglip_text_tower = AutoModel.from_pretrained(siglip2_model_name).text_model.to(device).to(torch.bfloat16)
     siglip_text_tower.eval()
     processor = AutoProcessor.from_pretrained(siglip2_model_name, max_num_patches=256)
 
@@ -176,9 +172,7 @@ def extract_embeddings_multi(
     # But usually it's fine. Using 0 to be safe unless we need speed.
     # Actually, tokenization is slow, so workers=num_workers is better if it works.
     # Let's try num_workers.
-    siglip_loader = DataLoader(
-        siglip_dataset, batch_size=bs, shuffle=False, num_workers=num_workers
-    )
+    siglip_loader = DataLoader(siglip_dataset, batch_size=bs, shuffle=False, num_workers=num_workers)
 
     text_embeddings_siglip = []
     for input_ids in tqdm(siglip_loader, desc="SigLIP2 texts"):
@@ -231,9 +225,7 @@ def extract_embeddings_multi(
         embeds_dino = embeds_dino / embeds_dino.norm(p=2, dim=-1, keepdim=True)
 
         # SigLIP2 image embeddings from summary
-        embeds_siglip = image_summary_siglip2 / image_summary_siglip2.norm(
-            p=2, dim=-1, keepdim=True
-        )
+        embeds_siglip = image_summary_siglip2 / image_summary_siglip2.norm(p=2, dim=-1, keepdim=True)
 
         image_embeddings_dino.append(embeds_dino.to(dtype=torch.bfloat16).detach().cpu())
         image_embeddings_siglip.append(embeds_siglip.to(dtype=torch.bfloat16).detach().cpu())
@@ -298,9 +290,7 @@ def combine_logits(
     raise ValueError(f"Unknown combine mode: {mode}")
 
 
-def compute_similarity_matrix_chunked(
-    image_embeddings, text_embeddings, device="cuda", batch_size=1024
-):
+def compute_similarity_matrix_chunked(image_embeddings, text_embeddings, device="cuda", batch_size=1024):
     """Compute similarity matrix in chunks to avoid OOM or slow CPU matmul."""
     print("Computing similarity matrix (chunked)...")
     num_images = image_embeddings.shape[0]
@@ -351,9 +341,7 @@ def compute_similarity_matrix_chunked(
     return sim_matrix
 
 
-def compute_text_embeddings_siglip2(
-    texts: list[str], model_name: str, device: str, batch_size: int = 1024
-):
+def compute_text_embeddings_siglip2(texts: list[str], model_name: str, device: str, batch_size: int = 1024):
     """Compute normalized text embeddings using SigLIP2."""
     text_tower = AutoModel.from_pretrained(model_name).text_model.to(device)
     text_tower.eval()
@@ -392,9 +380,7 @@ def average_embeddings_over_templates(embeddings, num_classes, num_templates):
     return embeddings
 
 
-def compute_retrieval_metrics_from_similarity(
-    similarity_matrix: torch.Tensor, image_to_texts_map, device=None
-):
+def compute_retrieval_metrics_from_similarity(similarity_matrix: torch.Tensor, image_to_texts_map, device=None):
     """
     Compute bidirectional retrieval metrics given a precomputed similarity (logits) matrix.
     Vectorized implementation for speed.

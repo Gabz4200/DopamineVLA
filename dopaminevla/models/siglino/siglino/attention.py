@@ -17,10 +17,13 @@
 # Attention module for Falcon Vision
 # Supports FlexAttention (CUDA) or SDPA fallback (CPU) for device-agnostic attention
 
+
 import einops as E
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.attention.flex_attention import AuxRequest, BlockMask, create_block_mask, flex_attention
+from torch.torch_version import TorchVersion
 
 from .rope import apply_3d_rotary_emb
 
@@ -30,42 +33,31 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
         return x
-    return (
-        x.unsqueeze(3)
-        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
-        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
-    )
-
-
-# Lazy flex_attention import: only available on CUDA with compute capability >= 8.0
-_HAS_FLEX_ATTENTION = False
-_flex_attention = None
-_AuxRequest = None
-_BlockMask = None
-_create_block_mask = None
-
-try:
-    from torch.nn.attention.flex_attention import (
-        AuxRequest as _AuxRequest,
-    )
-    from torch.nn.attention.flex_attention import (
-        BlockMask as _BlockMask,
-    )
-    from torch.nn.attention.flex_attention import (
-        create_block_mask as _create_block_mask,
-    )
-    from torch.nn.attention.flex_attention import (
-        flex_attention as _flex_attention,
-    )
-
-    _HAS_FLEX_ATTENTION = True
-except ImportError:
-    pass
+    return x.unsqueeze(3).expand(bs, slen, n_kv_heads, n_rep, head_dim).reshape(bs, slen, n_kv_heads * n_rep, head_dim)
 
 
 def device_supports_flex_attention(device: torch.device) -> bool:
-    """Check if the device supports flex_attention."""
-    return _HAS_FLEX_ATTENTION and device.type == "cuda"
+    """
+    Checks if the given device possesses the necessary hardware and
+    software foundations to support flex_attention.
+    """
+    # Is it a CUDA device?
+    if device.type != "cuda":
+        return False
+
+    # Is the PyTorch version advanced enough (>= 2.5.0)?
+    current_version = torch.__version__
+    required_version = TorchVersion("2.5.0")
+    if current_version < required_version:
+        return False
+
+    # Does the silicon possess the required architecture (Compute >= 8.0)?
+    major, minor = torch.cuda.get_device_capability(device)
+    if major < 8:
+        return False
+
+    # If the environment passes all three gates we have it
+    return True
 
 
 class FlexAttentionWrapper(nn.Module):
@@ -79,21 +71,21 @@ class FlexAttentionWrapper(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        block_mask: _BlockMask | None = None,
+        block_mask: BlockMask | None = None,
         compile: bool = True,
         return_aux: bool = False,
     ):
-        fn = _flex_attention
-        if compile and _flex_attention is not None:
+        fn = flex_attention
+        if compile and device_supports_flex_attention(q.device):
             if FlexAttentionWrapper._compiled is None:
                 FlexAttentionWrapper._compiled = torch.compile(
-                    _flex_attention,
+                    flex_attention,
                     mode="max-autotune-no-cudagraphs",
                 )
             fn = FlexAttentionWrapper._compiled
 
         if return_aux:
-            return fn(q, k, v, block_mask=block_mask, return_aux=_AuxRequest(lse=True))
+            return fn(q, k, v, block_mask=block_mask, return_aux=AuxRequest(lse=True))
         return fn(q, k, v, block_mask=block_mask)
 
 
@@ -157,7 +149,7 @@ class Attention(nn.Module):
         freqs_cis: torch.Tensor,
         freqs_cis_2d: torch.Tensor | None = None,
         pos_thw: torch.Tensor | None = None,
-        attention_masks: "_BlockMask | torch.Tensor | None" = None,
+        attention_masks: BlockMask | torch.Tensor | None = None,
         compile: bool = True,
     ) -> torch.Tensor:
         bs, seqlen, _ = x.shape
@@ -180,12 +172,10 @@ class Attention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
 
-        use_flex = self.use_flex_attn and isinstance(attention_masks, _BlockMask)
+        use_flex = self.use_flex_attn and isinstance(attention_masks, BlockMask)
 
         if use_flex:
-            output, aux = self.inner_attention(
-                xq, xk, xv, block_mask=attention_masks, compile=compile, return_aux=True
-            )
+            output, aux = self.inner_attention(xq, xk, xv, block_mask=attention_masks, compile=compile, return_aux=True)
             sinks_BHL = E.rearrange(self.sinks, "h -> 1 h 1")
             sink_scale = torch.sigmoid(aux.lse - sinks_BHL)
             output = (output * sink_scale.unsqueeze(-1)).to(output.dtype)
@@ -205,9 +195,9 @@ def create_attention_mask(
     Q_LEN: int,
     KV_LEN: int,
     BLOCK_SIZE: tuple[int, int] = (64, 64),
-) -> "_BlockMask":
+) -> BlockMask:
     """Create a BlockMask for flex_attention."""
-    return _create_block_mask(
+    return create_block_mask(
         mask_mod,
         B=B,
         H=H,

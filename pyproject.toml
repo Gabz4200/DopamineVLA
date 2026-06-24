@@ -25,6 +25,9 @@ dependencies = [
     "transformers",
     "trl",
     "unsloth",
+    "setuptools>=82.0.1",
+    "types-setuptools>=82.0.0.20260518",
+    "pytest>=9.1.1",
 ]
 
 [[tool.uv.index]]
@@ -56,14 +59,11 @@ markers = ["slow: marks tests as slow (hub downloading, large model inference)"]
 package-dir = { "dopaminevla" = "dopaminevla" }
 
 [tool.ruff]
-line-length = 100
+line-length = 130
 target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
 [tool.pyrefly]
-project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
-]
+project-includes = ["**/*.py*", "**/*.ipynb"]

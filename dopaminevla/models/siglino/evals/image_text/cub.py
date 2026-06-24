@@ -157,37 +157,23 @@ def setup_text_embeddings_for_cub(
         all_texts = [t for texts in texts_per_class for t in texts]
 
         # Dinotxt
-        emb_dino = compute_text_embeddings_dinotxt(
-            all_texts, dinotxt_model, dinotxt_tokenizer, device, text_batch_size
-        )
-        emb_dino = average_embeddings_over_templates(
-            emb_dino, len(class_keys), len(OPENAI_TEMPLATES)
-        )
+        emb_dino = compute_text_embeddings_dinotxt(all_texts, dinotxt_model, dinotxt_tokenizer, device, text_batch_size)
+        emb_dino = average_embeddings_over_templates(emb_dino, len(class_keys), len(OPENAI_TEMPLATES))
 
         # SigLIP2
-        emb_siglip = compute_text_embeddings_siglip2(
-            all_texts, siglip2_model_name, device, text_batch_size
-        )
-        emb_siglip = average_embeddings_over_templates(
-            emb_siglip, len(class_keys), len(OPENAI_TEMPLATES)
-        )
+        emb_siglip = compute_text_embeddings_siglip2(all_texts, siglip2_model_name, device, text_batch_size)
+        emb_siglip = average_embeddings_over_templates(emb_siglip, len(class_keys), len(OPENAI_TEMPLATES))
     else:
         prompt_list = [f"an image of {name}" for name in class_display_names]
-        emb_dino = compute_text_embeddings_dinotxt(
-            prompt_list, dinotxt_model, dinotxt_tokenizer, device, text_batch_size
-        )
-        emb_siglip = compute_text_embeddings_siglip2(
-            prompt_list, siglip2_model_name, device, text_batch_size
-        )
+        emb_dino = compute_text_embeddings_dinotxt(prompt_list, dinotxt_model, dinotxt_tokenizer, device, text_batch_size)
+        emb_siglip = compute_text_embeddings_siglip2(prompt_list, siglip2_model_name, device, text_batch_size)
 
     return emb_dino, emb_siglip, id_to_cat
 
 
 @torch.no_grad()
 def main():
-    parser = argparse.ArgumentParser(
-        "CUB-200-2011 Zero-shot Classification (DINOv3/SigLIP2 multi-teacher) with ensembling"
-    )
+    parser = argparse.ArgumentParser("CUB-200-2011 Zero-shot Classification (DINOv3/SigLIP2 multi-teacher) with ensembling")
     parser.add_argument("--ckpt_path", type=str, required=True)
     parser.add_argument("--configs", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
@@ -205,9 +191,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--pin_memory", type=lambda x: str(x).lower() == "true", default=True)
-    parser.add_argument(
-        "--persistent_workers", type=lambda x: str(x).lower() == "true", default=False
-    )
+    parser.add_argument("--persistent_workers", type=lambda x: str(x).lower() == "true", default=False)
 
     # DINOv3/dinotxt args
     parser.add_argument(
@@ -216,9 +200,7 @@ def main():
         required=True,
         help="Local DINOv3 repo dir for torch.hub.load",
     )
-    parser.add_argument(
-        "--dinotxt_weights", type=str, required=True, help="Path to dinotxt weights .pt"
-    )
+    parser.add_argument("--dinotxt_weights", type=str, required=True, help="Path to dinotxt weights .pt")
     parser.add_argument(
         "--dinov3_backbone_weights",
         type=str,
@@ -227,17 +209,11 @@ def main():
     )
 
     # SigLIP2 args
-    parser.add_argument(
-        "--siglip2_model_name", type=str, default="google/siglip2-so400m-patch16-naflex"
-    )
+    parser.add_argument("--siglip2_model_name", type=str, default="google/siglip2-so400m-patch16-naflex")
 
     # Text embedding options (OpenAI template averaging)
-    parser.add_argument(
-        "--text_batch_size", type=int, default=1024, help="Batch size for encoding text prompts."
-    )
-    parser.add_argument(
-        "--no_openai_templates", action="store_true", help="Disable OpenAI template averaging."
-    )
+    parser.add_argument("--text_batch_size", type=int, default=1024, help="Batch size for encoding text prompts.")
+    parser.add_argument("--no_openai_templates", action="store_true", help="Disable OpenAI template averaging.")
 
     # Device and model IO
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -336,9 +312,7 @@ def main():
 
         # SigLIP2 scoring
         image_embeds_siglip = results["summaries"]["siglip2"]
-        image_embeds_siglip = image_embeds_siglip / image_embeds_siglip.norm(
-            p=2, dim=-1, keepdim=True
-        )
+        image_embeds_siglip = image_embeds_siglip / image_embeds_siglip.norm(p=2, dim=-1, keepdim=True)
         logits_per_text_siglip = image_embeds_siglip @ text_embeds_siglip2.T
         pred_ids_siglip = logits_per_text_siglip.argmax(dim=1)
 
@@ -378,24 +352,16 @@ def main():
             dtype=torch.long,
         )
         dist.all_reduce(totals, op=dist.ReduceOp.SUM)
-        num_correct_dinotxt, num_correct_siglip2, num_correct_ensemble, num_samples = (
-            totals.tolist()
-        )
+        num_correct_dinotxt, num_correct_siglip2, num_correct_ensemble, num_samples = totals.tolist()
 
     # Save/print results
     if (not using_distributed) or (rank == 0):
         accuracy_dinotxt = num_correct_dinotxt / num_samples if num_samples > 0 else 0.0
         accuracy_siglip2 = num_correct_siglip2 / num_samples if num_samples > 0 else 0.0
         accuracy_ensemble = num_correct_ensemble / num_samples if num_samples > 0 else 0.0
-        print(
-            f"DINOv3/dinotxt CUB Test Accuracy: {accuracy_dinotxt:.4f} ({num_correct_dinotxt}/{num_samples})"
-        )
-        print(
-            f"SigLIP2 CUB Test Accuracy: {accuracy_siglip2:.4f} ({num_correct_siglip2}/{num_samples})"
-        )
-        print(
-            f"Ensemble (entropy-weighted) CUB Test Accuracy: {accuracy_ensemble:.4f} ({num_correct_ensemble}/{num_samples})"
-        )
+        print(f"DINOv3/dinotxt CUB Test Accuracy: {accuracy_dinotxt:.4f} ({num_correct_dinotxt}/{num_samples})")
+        print(f"SigLIP2 CUB Test Accuracy: {accuracy_siglip2:.4f} ({num_correct_siglip2}/{num_samples})")
+        print(f"Ensemble (entropy-weighted) CUB Test Accuracy: {accuracy_ensemble:.4f} ({num_correct_ensemble}/{num_samples})")
 
         args.ckpt_path.split("/")[-1] or args.ckpt_path.split("/")[-2]
 

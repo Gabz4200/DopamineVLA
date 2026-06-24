@@ -89,9 +89,7 @@ def process_preprocessed_batch(batch, model, device):
     }
 
 
-def adapt_patches_with_dinov3_head(
-    image_summary_dinov3, patch_tokens_list_dinov3, dinotxt, storage_tokens_batch=None
-):
+def adapt_patches_with_dinov3_head(image_summary_dinov3, patch_tokens_list_dinov3, dinotxt, storage_tokens_batch=None):
     """Adapt tokens via dinotxt.visual_model.head using sequence:
     [CLS] + [optional storage] + [patches]."""
     if not hasattr(dinotxt, "visual_model") or not hasattr(dinotxt.visual_model, "head"):
@@ -158,9 +156,7 @@ def extract_embeddings_multi(
 
     # Text embeddings with SigLIP2
     print("Extracting text embeddings (SigLIP2)...")
-    siglip_text_tower = (
-        AutoModel.from_pretrained(siglip2_model_name).text_model.to(device).to(torch.bfloat16)
-    )
+    siglip_text_tower = AutoModel.from_pretrained(siglip2_model_name).text_model.to(device).to(torch.bfloat16)
     siglip_text_tower.eval()
     processor = AutoProcessor.from_pretrained(siglip2_model_name, max_num_patches=256)
     text_embeddings_siglip = []
@@ -172,9 +168,7 @@ def extract_embeddings_multi(
             inp = torch.nn.functional.pad(
                 torch.tensor(enc, dtype=torch.long, device=device),
                 (0, 64 - len(enc)),
-                value=processor.tokenizer.pad_token_id
-                if hasattr(processor.tokenizer, "pad_token_id")
-                else 0,
+                value=processor.tokenizer.pad_token_id if hasattr(processor.tokenizer, "pad_token_id") else 0,
             )[:64]
             ids.append(inp)
         input_ids = torch.stack(ids, dim=0)
@@ -196,10 +190,7 @@ def extract_embeddings_multi(
 
     for i in tqdm(range(0, len(images), bs)):
         batch_images = images[i : i + bs]
-        batch_images = [
-            img.convert("RGB") if hasattr(img, "mode") and img.mode != "RGB" else img
-            for img in batch_images
-        ]
+        batch_images = [img.convert("RGB") if hasattr(img, "mode") and img.mode != "RGB" else img for img in batch_images]
 
         # Falcon-style preprocessing
         processed = image_processor(batch_images, max_num_patches=max_num_patches)
@@ -228,9 +219,7 @@ def extract_embeddings_multi(
         embeds_dino = embeds_dino / embeds_dino.norm(p=2, dim=-1, keepdim=True)
 
         # SigLIP2 image embeddings from summary
-        embeds_siglip = image_summary_siglip2 / image_summary_siglip2.norm(
-            p=2, dim=-1, keepdim=True
-        )
+        embeds_siglip = image_summary_siglip2 / image_summary_siglip2.norm(p=2, dim=-1, keepdim=True)
 
         image_embeddings_dino.append(embeds_dino.to(dtype=torch.bfloat16).detach().cpu())
         image_embeddings_siglip.append(embeds_siglip.to(dtype=torch.bfloat16).detach().cpu())
@@ -296,9 +285,7 @@ def combine_logits(
     raise ValueError(f"Unknown combine mode: {mode}")
 
 
-def compute_text_embeddings_dinotxt(
-    texts: list[str], dinotxt_model, dinotxt_tokenizer, device: str, batch_size: int = 1024
-):
+def compute_text_embeddings_dinotxt(texts: list[str], dinotxt_model, dinotxt_tokenizer, device: str, batch_size: int = 1024):
     """Compute normalized text embeddings using dinotxt."""
     embeds_chunks = []
     with torch.inference_mode():
@@ -311,9 +298,7 @@ def compute_text_embeddings_dinotxt(
     return torch.cat(embeds_chunks, dim=0)
 
 
-def compute_text_embeddings_siglip2(
-    texts: list[str], model_name: str, device: str, batch_size: int = 1024
-):
+def compute_text_embeddings_siglip2(texts: list[str], model_name: str, device: str, batch_size: int = 1024):
     """Compute normalized text embeddings using SigLIP2."""
     text_tower = AutoModel.from_pretrained(model_name).text_model.to(device).to(torch.bfloat16)
     text_tower.eval()

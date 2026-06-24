@@ -62,9 +62,7 @@ def convert_image_to_patches(image: torch.Tensor, patch_size: int) -> torch.Tens
     num_patches_height = image_height // patch_size
     num_patches_width = image_width // patch_size
 
-    patched_image = image.reshape(
-        num_patches_height, patch_size, num_patches_width, patch_size, num_channels
-    )
+    patched_image = image.reshape(num_patches_height, patch_size, num_patches_width, patch_size, num_channels)
     patched_image = patched_image.permute(0, 2, 1, 3, 4)
     patched_image = patched_image.reshape(num_patches_height * num_patches_width, -1)
     return patched_image
@@ -114,9 +112,7 @@ class SigLinoImageProcessor(ImageProcessingMixin):
         self.do_rescale = do_rescale
         self.do_normalize = do_normalize
 
-    def preprocess_single(
-        self, image: Image.Image | np.ndarray
-    ) -> tuple[np.ndarray, tuple[int, int]]:
+    def preprocess_single(self, image: Image.Image | np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
         """Preprocess a single image."""
         if isinstance(image, Image.Image):
             image = image.convert("RGB")
@@ -140,7 +136,7 @@ class SigLinoImageProcessor(ImageProcessingMixin):
                 max_pixels=self.max_pixels,
             )
             pil_image = Image.fromarray(image.astype(np.uint8))
-            pil_image = pil_image.resize((resized_width, resized_height), Image.BICUBIC)
+            pil_image = pil_image.resize((resized_width, resized_height), Image.Resampling.BICUBIC)
             image = np.array(pil_image)
         else:
             resized_height, resized_width = height, width
@@ -183,8 +179,6 @@ class SigLinoImageProcessor(ImageProcessingMixin):
         mask_dtype: torch.dtype | None = None,
     ) -> dict[str, torch.Tensor]:
         """Batch images into padded tensors with masks."""
-        if not pixel_values:
-            return None
 
         if mask_dtype is None:
             mask_dtype = output_dtype

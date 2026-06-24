@@ -11,25 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Edited by Gabriel Amaral
 
 import einops as E
 import torch
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
+
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, device: str = "cpu") -> torch.Tensor:
     """Precompute frequency tensor for 1D rotary embeddings."""
-    # Compute on CPU explicitly to survive meta-device init context
     if end > 0:
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device="cpu")[: (dim // 2)].float() / dim))
-        t_cpu = torch.arange(end, device="cpu")
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=device if device else DEVICE)[: (dim // 2)].float() / dim))
+        t_cpu = torch.arange(end, device=device if device else DEVICE)
         freqs = torch.outer(t_cpu, freqs).float()
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
         return freqs_cis
     else:
-        return torch.tensor([], dtype=torch.complex64, device="cpu")
+        return torch.tensor([], dtype=torch.complex64, device=device if device else DEVICE)
 
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor, device: str = "cpu") -> torch.Tensor:
     ndim = x.ndim
     seqlen = x.shape[1]
     freqs_cis = freqs_cis[:seqlen]
@@ -38,10 +41,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
 
 
 def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-    pos_t: torch.Tensor | None = None,
+    xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor, pos_t: torch.Tensor | None = None, device: str = "cpu"
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply rotary embeddings to query and key tensors."""
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
@@ -65,6 +65,7 @@ def apply_3d_rotary_emb(
     freqs_cis: torch.Tensor,
     freqs_cis_2d: torch.Tensor | None,
     pos_hw: torch.Tensor | None,
+    device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply 3D rotary embeddings (1D temporal + 2D spatial)."""
     xq_t, xq_hw = xq.chunk(chunks=2, dim=-1)
@@ -82,17 +83,17 @@ def apply_3d_rotary_emb(
     return xq_out, xk_out
 
 
-def _phi(m: int) -> float:
+def _phi(m: int, device: str = "cpu") -> float:
     x = 2.0
     for _ in range(10):
         x = (1 + x) ** (1.0 / (m + 1.0))
     return x
 
 
-def make_directions(n: int, d: int) -> torch.Tensor:
+def make_directions(n: int, d: int, device: str = "cpu") -> torch.Tensor:
     g = _phi(d)
-    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device="cpu")
-    i = torch.arange(1, n + 1, dtype=torch.float64, device="cpu").unsqueeze(1)
+    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=device if device else DEVICE)
+    i = torch.arange(1, n + 1, dtype=torch.float64, device=device if device else DEVICE).unsqueeze(1)
     z = torch.fmod(i * alpha, 1.0)
     directions = torch.erfinv(2.0 * z - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
@@ -106,17 +107,17 @@ def precompute_golden_freqs_cis(
     max_freq: float,
     pos_dim: int = 2,
     p_zero_freqs: float = 0.0,
+    device: str = "cpu",
 ) -> torch.Tensor:
     """Precompute golden ratio based 2D frequencies for vision tokens."""
     n_freqs = head_dim // 2
     n_zero_freqs = round(p_zero_freqs * n_freqs)
 
-    # Compute on CPU explicitly to survive meta-device init context
     # from Transformers from_pretrained(). register_buffer moves to correct device.
-    zeros = torch.zeros(n_zero_freqs, device="cpu")
+    zeros = torch.zeros(n_zero_freqs, device=device if device else DEVICE)
 
     if n_freqs - n_zero_freqs > 0:
-        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device="cpu")
+        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device=device if device else DEVICE)
         scaled_vals = min_freq * (max_freq / min_freq) ** linspace_vals
         omega_F = torch.cat((zeros, scaled_vals))
     else:
@@ -126,9 +127,7 @@ def precompute_golden_freqs_cis(
     return directions_hFP * omega_F.reshape(n_freqs, 1)
 
 
-def apply_golden_freqs_cis_to_visual_pos(
-    freqs_hFP: torch.Tensor, pos_BSP: torch.Tensor
-) -> torch.Tensor:
+def apply_golden_freqs_cis_to_visual_pos(freqs_hFP: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu") -> torch.Tensor:
     """Apply golden frequencies to visual positions."""
     img_mask_BS = E.reduce(~torch.isnan(pos_BSP), "b s p -> b s", reduction="all")
     pos_tP = pos_BSP[img_mask_BS].float()
@@ -137,17 +136,13 @@ def apply_golden_freqs_cis_to_visual_pos(
 
 
 def apply_golden_rotary_emb(
-    input_BShd: torch.Tensor,
-    freqs_cis_thF: torch.Tensor,
-    pos_BSP: torch.Tensor,
+    input_BShd: torch.Tensor, freqs_cis_thF: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu"
 ) -> torch.Tensor:
     """Apply golden rotary embedding to image tokens only."""
     img_mask_BS = E.reduce(~torch.isnan(pos_BSP), "b s p -> b s", reduction="all")
     input_thd = input_BShd[img_mask_BS]
 
-    input_thd = torch.view_as_complex(
-        E.rearrange(input_thd.float(), "t h (d two) -> t h d two", two=2)
-    )
+    input_thd = torch.view_as_complex(E.rearrange(input_thd.float(), "t h (d two) -> t h d two", two=2))
     output_thd = input_thd * freqs_cis_thF
     output_thd = torch.view_as_real(output_thd).flatten(-2).type_as(input_BShd)
 

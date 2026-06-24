@@ -143,44 +143,52 @@ class TestSigLinoModelCPU:
         return model
 
     def _run_forward(self, model):
-        x = torch.randn(1, 3, 224, 224)
-        out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))
-        assert "patch_features" in out
-        assert "siglino" in out["patch_features"]
+        out = []
+        for n in range(1, 5):
+            x = torch.randn(1, 3, 224, 224)
+            out.append(model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]])))
+            assert "patch_features" in out[-1]
+            assert "siglino" in out[-1]["patch_features"]
         return out
 
     def test_dense_30m_cpu_forward(self, dense_30m_args):
         model = self._create_model(dense_30m_args)
         out = self._run_forward(model)
-        feats = out["patch_features"]["siglino"]
-        assert feats.ndim == 3
+        for o in out:
+            feats = o["patch_features"]["siglino"]
+            assert feats.ndim == 3
 
     def test_dense_70m_cpu_forward(self, dense_70m_args):
         model = self._create_model(dense_70m_args)
         out = self._run_forward(model)
-        feats = out["patch_features"]["siglino"]
-        assert feats.ndim == 3
+        for o in out:
+            feats = o["patch_features"]["siglino"]
+            assert feats.ndim == 3
 
     @pytest.mark.slow
     def test_moe_015b_cpu_forward(self, siglino_015b_args):
         model = self._create_model(siglino_015b_args)
         out = self._run_forward(model)
-        feats = out["patch_features"]["siglino"]
-        assert feats.ndim == 3
+        for o in out:
+            feats = o["patch_features"]["siglino"]
+            assert feats.ndim == 3
 
     def test_batched_input(self, dense_30m_args):
         model = self._create_model(dense_30m_args)
         x = torch.randn(2, 3, 224, 224)
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14], [14, 14]]))
-        assert out["patch_features"]["siglino"].shape[0] == 2
+        for o in out:
+            feats = o["patch_features"]["siglino"]
+            assert feats.shape[0] == 2
 
     def test_no_nan_in_output(self, dense_30m_args):
         """Verify random-init model produces no NaN (init_weights was called)."""
         model = self._create_model(dense_30m_args)
         out = self._run_forward(model)
-        for feat in out["patch_features"].values():
-            assert not feat.isnan().any(), f"NaN found in {feat.shape}"
-            assert not feat.isinf().any(), f"Inf found in {feat.shape}"
+        for o in out:
+            feats = o["patch_features"]["siglino"]
+            assert not feats.isnan().any(), f"NaN found in {feats.shape}"
+            assert not feats.isinf().any(), f"Inf found in {feats.shape}"
 
 
 _HF_SMALL = dict(
@@ -224,15 +232,79 @@ class TestSigLinoHFModel:
         assert "patch_features" in out
         assert out["patch_features"]["siglino"].shape[-1] == 512
 
-    def test_save_and_load_local_hf(self, tmp_path):
-        config = SigLinoConfig(**_HF_SMALL)
-        model = SigLinoHFModel(config)
-        model.save_pretrained(tmp_path)
-        loaded = SigLinoHFModel.from_pretrained(tmp_path)
-        loaded.eval()
+    def test_save_and_load_moe_hf(self, tmp_path):
+        # Initialize a miniature MoE architecture
+        # We use a small config to keep the test blazing fast, while
+        # guaranteeing the complex MoE nested weights are created and tested.
+        config = SigLinoConfig(
+            hidden_size=64,
+            num_hidden_layers=2,  # We need enough layers...
+            first_n_layers_dense=1,  # ...to force Layer 1 to become an MoE layer
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=32,
+            moe_dim=128,
+            moe_num_experts=4,
+            moe_num_shared_experts=1,
+            moe_top_k=2,
+        )
+
+        original_model = SigLinoHFModel(config)
+        original_model.eval()
+
+        # Forge the key
         x = torch.randn(1, 3, 224, 224)
-        out = loaded(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))
-        assert "patch_features" in out
+        spatial_shapes = torch.tensor([[14, 14]])
+
+        # Record the exact numerical output of the original MoE model
+        with torch.no_grad():
+            original_out = original_model(pixel_values=x, spatial_shapes=spatial_shapes)
+            orig_siglino_feat = original_out["patch_features"]["siglino"]
+
+        # Traverse the void (save to disk and load back)
+        original_model.save_pretrained(tmp_path)
+        loaded_model = SigLinoHFModel.from_pretrained(tmp_path)
+        loaded_model.eval()
+
+        # Run the key through the newly awakened model
+        with torch.no_grad():
+            loaded_out = loaded_model(pixel_values=x, spatial_shapes=spatial_shapes)
+            loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
+
+        # Did the nested routing weights survive?
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
+            "MoE weights were corrupted or lost during Hugging Face serialization!"
+        )
+
+    def test_save_and_load_local_hf(self, tmp_path):
+        # Initialize the original mind
+        config = SigLinoConfig(**_HF_SMALL)
+        original_model = SigLinoHFModel(config)
+        original_model.eval()
+
+        # Forge a specific key (the input image and shapes)
+        x = torch.randn(1, 3, 224, 224)
+        spatial_shapes = torch.tensor([[14, 14]])
+
+        # Record the exact numerical output of the original model
+        with torch.no_grad():
+            original_out = original_model(pixel_values=x, spatial_shapes=spatial_shapes)
+            orig_siglino_feat = original_out["patch_features"]["siglino"]
+
+        # Sleep (save to disk) and wake up (load from disk)
+        original_model.save_pretrained(tmp_path)
+        loaded_model = SigLinoHFModel.from_pretrained(tmp_path)
+        loaded_model.eval()
+
+        # Run the exact same key through the newly awakened model
+        with torch.no_grad():
+            loaded_out = loaded_model(pixel_values=x, spatial_shapes=spatial_shapes)
+            loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
+
+        # The absolute proof: Do the numbers match exactly?
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
+            "The loaded model's outputs diverge from the original. Weights were corrupted or lost!"
+        )
 
 
 class TestSigLinoImageProcessor:
@@ -321,6 +393,51 @@ class TestONNXWrapper:
             assert isinstance(t, torch.Tensor)
 
     @pytest.mark.slow
+    def test_export_to_onnx_and_verify(self, tmp_path):
+        import numpy as np
+
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            pytest.skip("onnxruntime is required to verify the ONNX export.")
+
+        # Forge the source model and save it
+        config = SigLinoConfig(hidden_size=64, num_hidden_layers=2, num_attention_heads=2, head_dim=32)
+        model = SigLinoHFModel(config)
+        model.eval()
+
+        model_dir = tmp_path / "dummy_model"
+        model.save_pretrained(model_dir)
+
+        # Command the export process
+        onnx_path = tmp_path / "siglino.onnx"
+        SigLinoHFModel.export_to_onnx(model_path=str(model_dir), output_path=str(onnx_path), opset_version=17)
+        assert onnx_path.exists(), "The ONNX file was not written to disk."
+
+        # Create a single, unchanging spark (image)
+        x = torch.randn(1, 3, 224, 224)
+
+        # Observe the PyTorch baseline
+        wrapper = model._get_onnx_wrapper()
+        with torch.no_grad():
+            pt_outputs = wrapper(x)
+
+        # Observe the ONNX runtime execution
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        ort_inputs = {session.get_inputs()[0].name: x.numpy()}
+        ort_outputs = session.run(None, ort_inputs)
+
+        # The absolute proof: Compare all 6 output tensors
+        for i, (pt_out, ort_out) in enumerate(zip(pt_outputs, ort_outputs)):
+            np.testing.assert_allclose(
+                pt_out.numpy(),
+                np.array(ort_out),
+                rtol=1e-4,
+                atol=1e-4,
+                err_msg=f"Mathematical divergence detected at output index {i}.",
+            )
+
+    @pytest.mark.slow
     def test_onnx_wrapper_forward(self):
         config = SigLinoConfig(
             hidden_size=64,
@@ -360,7 +477,5 @@ class TestQuantizeCPU:
         except Exception as e:
             pytest.skip(f"torchao quantize not supported in this env: {e}")
 
-        out = model(
-            pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]])
-        )
+        out = model(pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]]))
         assert "patch_features" in out

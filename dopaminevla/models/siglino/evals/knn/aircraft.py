@@ -112,21 +112,15 @@ def main():
     # Data paths
     parser.add_argument("--images_dir", type=str, required=True, help="Directory with images")
     parser.add_argument("--train_list", type=str, required=True, help="Train images list (txt)")
-    parser.add_argument(
-        "--train_annotations", type=str, required=True, help="Train annotations (txt)"
-    )
+    parser.add_argument("--train_annotations", type=str, required=True, help="Train annotations (txt)")
     parser.add_argument("--val_list", type=str, required=True, help="Val/Test images list (txt)")
-    parser.add_argument(
-        "--val_annotations", type=str, required=True, help="Val/Test annotations (txt)"
-    )
+    parser.add_argument("--val_annotations", type=str, required=True, help="Val/Test annotations (txt)")
 
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--pin_memory", type=lambda x: str(x).lower() == "true", default=True)
-    parser.add_argument(
-        "--persistent_workers", type=lambda x: str(x).lower() == "true", default=False
-    )
+    parser.add_argument("--persistent_workers", type=lambda x: str(x).lower() == "true", default=False)
 
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--max_pixels_sqrt", type=int, default=768)
@@ -170,9 +164,7 @@ def main():
     # but here I'll just check if they differ.
     if train_dataset.cat_to_id != val_dataset.cat_to_id:
         if rank == 0:
-            print(
-                "[Warning] Train and Val datasets have different class mappings! kNN will fail/be wrong."
-            )
+            print("[Warning] Train and Val datasets have different class mappings! kNN will fail/be wrong.")
             # Force val to use train mapping
             val_dataset.cat_to_id = train_dataset.cat_to_id
             # Recompute samples with new mapping
@@ -181,18 +173,14 @@ def main():
                 if fam in train_dataset.cat_to_id:
                     new_samples.append((p, fam, train_dataset.cat_to_id[fam]))
             val_dataset.samples = new_samples
-            print(
-                f"[Info] Remapped Val dataset to match Train class IDs. New val size: {len(val_dataset)}"
-            )
+            print(f"[Info] Remapped Val dataset to match Train class IDs. New val size: {len(val_dataset)}")
 
     num_classes = len(train_dataset.cat_to_id)
 
     train_sampler = DistributedSampler(train_dataset, shuffle=False) if using_distributed else None
     val_sampler = DistributedSampler(val_dataset, shuffle=False) if using_distributed else None
 
-    collate_fn = make_collate_fn(
-        image_processor, max_num_patches=(args.max_pixels_sqrt**2 // 16**2)
-    )
+    collate_fn = make_collate_fn(image_processor, max_num_patches=(args.max_pixels_sqrt**2 // 16**2))
 
     train_loader = DataLoader(
         train_dataset,
@@ -241,12 +229,8 @@ def main():
         q_dino = q_dino / q_dino.norm(p=2, dim=-1, keepdim=True)
         q_siglip = q_siglip / q_siglip.norm(p=2, dim=-1, keepdim=True)
 
-        sim_dino, lab_dino = _distributed_topk(
-            q_dino, keys_dino, key_labels, args.k_neighbors, using_distributed
-        )
-        sim_siglip, lab_siglip = _distributed_topk(
-            q_siglip, keys_siglip, key_labels, args.k_neighbors, using_distributed
-        )
+        sim_dino, lab_dino = _distributed_topk(q_dino, keys_dino, key_labels, args.k_neighbors, using_distributed)
+        sim_siglip, lab_siglip = _distributed_topk(q_siglip, keys_siglip, key_labels, args.k_neighbors, using_distributed)
 
         votes_dino = class_votes(sim_dino, lab_dino, num_classes, args.temperature)
         votes_siglip = class_votes(sim_siglip, lab_siglip, num_classes, args.temperature)

@@ -93,9 +93,7 @@ class GroupedExperts(nn.Module):
         self.activation = activation
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        return _run_experts_for_loop(
-            self.w1, self.w2, self.w3, x, num_tokens_per_expert, self.activation
-        )
+        return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert, self.activation)
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
@@ -192,9 +190,7 @@ class MoE(nn.Module):
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
 
-        top_scores, selected_experts_indices, num_tokens_per_expert = self.router(
-            x, expert_bias=self.expert_bias
-        )
+        top_scores, selected_experts_indices, num_tokens_per_expert = self.router(x, expert_bias=self.expert_bias)
 
         # Reorder tokens by expert
         token_indices_sorted = torch.argsort(selected_experts_indices.view(-1), stable=True)
@@ -214,14 +210,14 @@ class MoE(nn.Module):
         else:
             out = torch.zeros_like(x)
 
-        routed_output = (routed_output.to(torch.float32) * top_scores_sorted.view(-1, 1)).to(
-            x.dtype
-        )
+        routed_output = (routed_output.to(torch.float32) * top_scores_sorted.view(-1, 1)).to(x.dtype)
 
         out = out.scatter_add(dim=0, index=token_indices_expanded, src=routed_output)
         return out.view(bs, slen, dim)
 
-    def init_weights(self, init_std: float, buffer_device: torch.device = None):
+    def init_weights(self, init_std: float, buffer_device: torch.device | None = None):
+        if buffer_device is None:
+            buffer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.experts.init_weights(init_std)
         self.router.init_weights(init_std)
         if self.shared_experts is not None:

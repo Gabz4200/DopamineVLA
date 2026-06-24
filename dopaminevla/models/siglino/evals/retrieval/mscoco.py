@@ -18,23 +18,13 @@ from utils import (
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="MSCOCO retrieval with multi-teacher DistilTransformer (DINOv3 + SigLIP2)"
-    )
-    parser.add_argument(
-        "--ckpt_path", type=str, required=True, help="Path to DistilTransformer checkpoint"
-    )
-    parser.add_argument(
-        "--configs", type=str, required=True, help="Model config name in siglino/configs.py"
-    )
-    parser.add_argument(
-        "--output_dir", type=str, required=True, help="Directory to save results JSON"
-    )
+    parser = argparse.ArgumentParser(description="MSCOCO retrieval with multi-teacher DistilTransformer (DINOv3 + SigLIP2)")
+    parser.add_argument("--ckpt_path", type=str, required=True, help="Path to DistilTransformer checkpoint")
+    parser.add_argument("--configs", type=str, required=True, help="Model config name in siglino/configs.py")
+    parser.add_argument("--output_dir", type=str, required=True, help="Directory to save results JSON")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for processing")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use for inference")
-    parser.add_argument(
-        "--max_pixels_sqrt", type=int, default=256, help="sqrt(max pixels) for patching"
-    )
+    parser.add_argument("--max_pixels_sqrt", type=int, default=256, help="sqrt(max pixels) for patching")
 
     # DINOv3/dinotxt args
     parser.add_argument(
@@ -43,9 +33,7 @@ def main():
         required=True,
         help="Local DINOv3 repo dir for torch.hub.load",
     )
-    parser.add_argument(
-        "--dinotxt_weights", type=str, required=True, help="Path to dinotxt weights .pt"
-    )
+    parser.add_argument("--dinotxt_weights", type=str, required=True, help="Path to dinotxt weights .pt")
     parser.add_argument(
         "--dinov3_backbone_weights",
         type=str,
@@ -72,9 +60,7 @@ def main():
         default="nlphuji/mscoco_2014_5k_test_image_text_retrieval",
         help="HF Dataset path or local path",
     )
-    parser.add_argument(
-        "--split", type=str, default="test", help="Split to evaluate on (validation/test)"
-    )
+    parser.add_argument("--split", type=str, default="test", help="Split to evaluate on (validation/test)")
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -142,19 +128,17 @@ def main():
     print(f"Total images: {len(images)}")
     print(f"Total texts: {len(all_texts)}")
 
-    image_embeddings_dino, text_embeddings_dino, image_embeddings_siglip, text_embeddings_siglip = (
-        extract_embeddings_multi(
-            model=model,
-            dinotxt=dinotxt,
-            dinotxt_tokenizer=dinotxt_tokenizer,
-            image_processor=image_processor,
-            images=images,
-            texts=all_texts,
-            device=args.device,
-            bs=args.batch_size,
-            siglip2_model_name=args.siglip2_model_name,
-            max_pixels_sqrt=args.max_pixels_sqrt,
-        )
+    image_embeddings_dino, text_embeddings_dino, image_embeddings_siglip, text_embeddings_siglip = extract_embeddings_multi(
+        model=model,
+        dinotxt=dinotxt,
+        dinotxt_tokenizer=dinotxt_tokenizer,
+        image_processor=image_processor,
+        images=images,
+        texts=all_texts,
+        device=args.device,
+        bs=args.batch_size,
+        siglip2_model_name=args.siglip2_model_name,
+        max_pixels_sqrt=args.max_pixels_sqrt,
     )
 
     print(f"Image embeddings (DINO) shape: {image_embeddings_dino.shape}")
@@ -167,18 +151,12 @@ def main():
     # Use chunked computation to avoid bottleneck
     from utils import compute_similarity_matrix_chunked
 
-    sim_dino = compute_similarity_matrix_chunked(
-        image_embeddings_dino, text_embeddings_dino, device=args.device
-    )
-    sim_siglip = compute_similarity_matrix_chunked(
-        image_embeddings_siglip, text_embeddings_siglip, device=args.device
-    )
+    sim_dino = compute_similarity_matrix_chunked(image_embeddings_dino, text_embeddings_dino, device=args.device)
+    sim_siglip = compute_similarity_matrix_chunked(image_embeddings_siglip, text_embeddings_siglip, device=args.device)
     print("Similarity (logits) matrices precomputed")
 
     # Ensemble logits (entropy-weighted, T=1 like imagenet.py)
-    logits_ens = combine_logits(
-        sim_dino, sim_siglip, T_dino=1.0, T_siglip=1.0, mode="entropy_weighted", alpha=0.5, beta=5.0
-    )
+    logits_ens = combine_logits(sim_dino, sim_siglip, T_dino=1.0, T_siglip=1.0, mode="entropy_weighted", alpha=0.5, beta=5.0)
 
     # Compute retrieval metrics for both heads and ensemble
     print("\n" + "=" * 60)
@@ -189,9 +167,7 @@ def main():
     print("\n" + "=" * 60)
     print("EVALUATING SigLIP2")
     print("=" * 60)
-    t2i_siglip, i2t_siglip = compute_retrieval_metrics_from_similarity(
-        sim_siglip, image_to_texts_map
-    )
+    t2i_siglip, i2t_siglip = compute_retrieval_metrics_from_similarity(sim_siglip, image_to_texts_map)
 
     print("\n" + "=" * 60)
     print("EVALUATING ENSEMBLE (dinotxt + SigLIP2, entropy-weighted)")

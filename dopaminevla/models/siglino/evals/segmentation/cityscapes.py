@@ -60,7 +60,7 @@ class HFCityscapesDataset(Dataset):
     def __init__(self, split="train", image_size=256, repo_id="Chris1/cityscapes"):
         self.ds = load_dataset(repo_id)[split]
         self.image_size = image_size
-        self.resize_img = transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC)
+        self.resize_img = transforms.Resize((image_size, image_size), interpolation=Image.Resampling.BICUBIC)
         self.resize_mask = transforms.Resize((image_size, image_size), interpolation=Image.NEAREST)
 
     def __len__(self):
@@ -83,9 +83,7 @@ class HFCityscapesDataset(Dataset):
 
 
 @torch.no_grad()
-def evaluate_cityscapes(
-    model, dataloader, criterion, num_classes: int, ignore_index: int, device="cuda"
-):
+def evaluate_cityscapes(model, dataloader, criterion, num_classes: int, ignore_index: int, device="cuda"):
     model.eval()
     val_loss = 0.0
     k = num_classes
@@ -123,12 +121,8 @@ def evaluate_cityscapes(
 def parse_args():
     p = argparse.ArgumentParser("Cityscapes segmentation using Falcon Vision backbone")
     p.add_argument("--ckpt_path", type=str, required=True, help="Path to checkpoint")
-    p.add_argument(
-        "--configs", type=str, required=True, help="Model config name in siglino/configs.py"
-    )
-    p.add_argument(
-        "--feature_type", type=str, default="dinov3", choices=["dinov3", "siglino", "siglip2"]
-    )
+    p.add_argument("--configs", type=str, required=True, help="Model config name in siglino/configs.py")
+    p.add_argument("--feature_type", type=str, default="dinov3", choices=["dinov3", "siglino", "siglip2"])
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -145,15 +139,9 @@ def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_dataset = HFCityscapesDataset(
-        split="train", image_size=args.image_size, repo_id=args.hf_repo
-    )
-    val_dataset = HFCityscapesDataset(
-        split="validation", image_size=args.image_size, repo_id=args.hf_repo
-    )
-    test_dataset = HFCityscapesDataset(
-        split="test", image_size=args.image_size, repo_id=args.hf_repo
-    )
+    train_dataset = HFCityscapesDataset(split="train", image_size=args.image_size, repo_id=args.hf_repo)
+    val_dataset = HFCityscapesDataset(split="validation", image_size=args.image_size, repo_id=args.hf_repo)
+    test_dataset = HFCityscapesDataset(split="test", image_size=args.image_size, repo_id=args.hf_repo)
 
     # Calculate max patches based on image size (patch size is 16)
     max_patches = (args.image_size // 16) ** 2

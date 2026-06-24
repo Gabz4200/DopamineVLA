@@ -57,24 +57,14 @@ class ADE20KDataset(Dataset):
         assert os.path.isdir(self.annotation_dir), f"Missing annotations dir: {self.annotation_dir}"
 
         self.images = sorted(
-            [
-                os.path.join(self.image_dir, f)
-                for f in os.listdir(self.image_dir)
-                if f.lower().endswith((".jpg", ".jpeg", ".png"))
-            ]
+            [os.path.join(self.image_dir, f) for f in os.listdir(self.image_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
         )
         self.masks = sorted(
-            [
-                os.path.join(self.annotation_dir, f)
-                for f in os.listdir(self.annotation_dir)
-                if f.lower().endswith(".png")
-            ]
+            [os.path.join(self.annotation_dir, f) for f in os.listdir(self.annotation_dir) if f.lower().endswith(".png")]
         )
-        assert len(self.images) == len(self.masks), (
-            f"Images and masks count mismatch: {len(self.images)} vs {len(self.masks)}"
-        )
+        assert len(self.images) == len(self.masks), f"Images and masks count mismatch: {len(self.images)} vs {len(self.masks)}"
 
-        self.resize_img = transforms.Resize((image_size, image_size), interpolation=Image.BICUBIC)
+        self.resize_img = transforms.Resize((image_size, image_size), interpolation=Image.Resampling.BICUBIC)
         self.resize_mask = transforms.Resize((image_size, image_size), interpolation=Image.NEAREST)
 
     def __len__(self):
@@ -149,9 +139,7 @@ def evaluate_seg(model, dataloader, criterion, num_classes: int, device="cuda"):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        "ADE20K segmentation evaluation using Falcon-Omni (distilled, multi-teacher packing) backbone"
-    )
+    p = argparse.ArgumentParser("ADE20K segmentation evaluation using Falcon-Omni (distilled, multi-teacher packing) backbone")
     p.add_argument(
         "--root_dir",
         type=str,
@@ -164,12 +152,8 @@ def parse_args():
         required=True,
         help="Path to Falcon-Omni distilled checkpoint (training output checkpoint)",
     )
-    p.add_argument(
-        "--configs", type=str, required=True, help="Model config name in siglino/configs.py"
-    )
-    p.add_argument(
-        "--feature_type", type=str, default="dinov3", choices=["dinov3", "siglino", "siglip2"]
-    )
+    p.add_argument("--configs", type=str, required=True, help="Model config name in siglino/configs.py")
+    p.add_argument("--feature_type", type=str, default="dinov3", choices=["dinov3", "siglino", "siglip2"])
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -186,9 +170,7 @@ def parse_args():
         help="Keep DataLoader workers alive (only if num_workers>0)",
     )
     p.add_argument("--log_every", type=int, default=50, help="Log every N train steps")
-    p.add_argument(
-        "--num_classes", type=int, default=151, help="For segmentation (includes ignore=0)"
-    )
+    p.add_argument("--num_classes", type=int, default=151, help="For segmentation (includes ignore=0)")
     p.add_argument(
         "--out_dir",
         type=str,
@@ -236,9 +218,7 @@ def main():
         loader_kwargs["prefetch_factor"] = max(2, args.prefetch_factor)
         loader_kwargs["persistent_workers"] = bool(args.persistent_workers)
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, **loader_kwargs
-    )
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, **loader_kwargs)
 
     # Feature dims
@@ -258,9 +238,7 @@ def main():
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-3
-    )
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=1e-3)
 
     # Train/eval
     best_metric = None
@@ -270,9 +248,7 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         train_loss = torch.zeros((), device=device, dtype=torch.float32)
-        for step, batch in enumerate(
-            tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}"), start=1
-        ):
+        for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}"), start=1):
             pixel_values = batch["pixel_values"].to(device, non_blocking=True)
             spatial_shape = batch["spatial_shape"].to(device, non_blocking=True)
             targets = batch["targets"].to(device, non_blocking=True)
@@ -289,9 +265,7 @@ def main():
                 tqdm.write(f"step {step}: loss={float((train_loss / step).item()):.4f}")
 
         train_loss = float((train_loss / max(1, len(train_loader))).item())
-        val_loss, metric = evaluate_seg(
-            model, val_loader, criterion, num_classes=args.num_classes, device=device
-        )
+        val_loss, metric = evaluate_seg(model, val_loader, criterion, num_classes=args.num_classes, device=device)
         is_better = (best_metric is None) or (metric > best_metric)  # Higher is better
 
         if is_better:

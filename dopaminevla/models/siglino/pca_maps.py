@@ -3,7 +3,7 @@ import argparse
 import glob
 import os
 import random
-from typing import List, Optional, Tuple, TypedDict
+from typing import List, Optional, Tuple
 
 import matplotlib
 import numpy as np
@@ -13,21 +13,16 @@ matplotlib.use("TkAgg")
 
 import matplotlib.pyplot as plt
 import torch
-from siglino import load_siglino_model, quantize_cpu_model
 from sklearn.decomposition import PCA
+
+from .siglino import load_siglino_model, quantize_cpu_model
+from .siglino.model import SigLinoFeatures
 
 
 def load_image(path: str) -> Image.Image:
     img = Image.open(path).convert("RGB")
     print(f"Image size: {img.size}")
     return img
-
-
-class SigLinoFeatures(TypedDict):
-    features_siglip: torch.Tensor
-    features_dinov3: torch.Tensor
-    features_siglino: torch.Tensor
-    grid_hw: Tuple[int, int]
 
 
 @torch.inference_mode()
@@ -71,20 +66,18 @@ def extract_patch_features(
         feats_siglino = patch_feats["siglino"].squeeze(0)
 
         features_per_image.append(
-            {
-                "features_siglip": feats_siglip,
-                "features_dinov3": feats_dinov3,
-                "features_siglino": feats_siglino,
-                "grid_hw": (H, W),
-            }
+            SigLinoFeatures(
+                features_siglip=feats_siglip,
+                features_dinov3=feats_dinov3,
+                features_siglino=feats_siglino,
+                grid_hw=(H, W),
+            )
         )
 
     return features_per_image
 
 
-def fit_and_project_pca(
-    feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = True
-) -> np.ndarray:
+def fit_and_project_pca(feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = True) -> np.ndarray:
     x = feats_2d.detach().float().cpu().numpy()
     pca = PCA(n_components=n_components, whiten=whiten)
     pca.fit(x)
@@ -157,12 +150,7 @@ def load_model_and_processor(
 
     print(f"Loading model with config: {config_name}")
 
-    is_hub_id = (
-        ckpt_path
-        and "/" in ckpt_path
-        and not os.path.isdir(ckpt_path)
-        and not os.path.isfile(ckpt_path)
-    )
+    is_hub_id = ckpt_path and "/" in ckpt_path and not os.path.isdir(ckpt_path) and not os.path.isfile(ckpt_path)
 
     if is_hub_id:
         print(f"Loading from HuggingFace Hub: {ckpt_path}")
@@ -229,17 +217,14 @@ def process_single_image(
         max_num_patches=max_num_patches,
     )
     info = features_info[0]
-    H, W = info["grid_hw"]
+    H, W = info.grid_hw
     num_valid = H * W
 
-    feats_LD_siglip = info["features_siglip"][:num_valid]
-    feats_LD_dinov3 = info["features_dinov3"][:num_valid]
-    feats_LD_siglino = info["features_siglino"][:num_valid]
+    feats_LD_siglip = info.features_siglip[:num_valid]
+    feats_LD_dinov3 = info.features_dinov3[:num_valid]
+    feats_LD_siglino = info.features_siglino[:num_valid]
 
-    msg = (
-        f"Feature shapes - siglip: {feats_LD_siglip.shape}, "
-        f"dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
-    )
+    msg = f"Feature shapes - siglip: {feats_LD_siglip.shape}, dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
     print(msg)
 
     projected_all_siglip = fit_and_project_pca(feats_LD_siglip)
@@ -257,7 +242,7 @@ def process_single_image(
     render_pca_image(
         image_rgb=image,
         projected_L3=(projected_all_siglino, projected_all_siglip, projected_all_dinov3),
-        grid_hw=info["grid_hw"],
+        grid_hw=info.grid_hw,
         save_path=output_path,
         title=os.path.basename(image_path),
     )
@@ -281,7 +266,7 @@ def main():
     parser.add_argument("--max_num_patches", type=int, default=256)
     args = parser.parse_args()
 
-    if not args.device:
+    if args.device is None:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     os.makedirs(args.output_path, exist_ok=True)

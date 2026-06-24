@@ -20,7 +20,7 @@
 from .configs import SigLinoArgs, siglino_configs
 from .hf_integration import SigLinoConfig, SigLinoHFModel, SigLinoPreTrainedModel
 from .image_processor import SigLinoImageProcessor
-from .model import SigLino
+from .model import SigLino, SigLinoFeatures
 from .utils import load_siglino_model, quantize_cpu_model
 
 __all__ = [
@@ -33,4 +33,5 @@ __all__ = [
     "SigLinoConfig",
     "SigLinoHFModel",
     "SigLinoPreTrainedModel",
+    "SigLinoFeatures",
 ]

@@ -33,9 +33,7 @@ class Flowers102Dataset(Dataset):
 
         class_dirs = [p for p in self.images_root.iterdir() if p.is_dir()]
         # Sort classes numerically "1".."102"
-        class_keys = sorted(
-            [p.name for p in class_dirs], key=lambda x: int(x) if x.isdigit() else x
-        )
+        class_keys = sorted([p.name for p in class_dirs], key=lambda x: int(x) if x.isdigit() else x)
 
         self.cat_to_id = {k: i for i, k in enumerate(class_keys)}
         self.id_to_cat = {i: k for k, i in self.cat_to_id.items()}
@@ -49,9 +47,7 @@ class Flowers102Dataset(Dataset):
                     samples.append((str(p), k, self.cat_to_id[k]))
 
         self.samples = samples
-        print(
-            f"Found {len(self.samples)} images across {len(class_keys)} classes in {self.images_root}"
-        )
+        print(f"Found {len(self.samples)} images across {len(class_keys)} classes in {self.images_root}")
 
     def __len__(self):
         return len(self.samples)
@@ -98,9 +94,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--prefetch_factor", type=int, default=1)
     parser.add_argument("--pin_memory", type=lambda x: str(x).lower() == "true", default=True)
-    parser.add_argument(
-        "--persistent_workers", type=lambda x: str(x).lower() == "true", default=False
-    )
+    parser.add_argument("--persistent_workers", type=lambda x: str(x).lower() == "true", default=False)
 
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--max_pixels_sqrt", type=int, default=768)
@@ -142,9 +136,7 @@ def main():
     train_sampler = DistributedSampler(train_dataset, shuffle=False) if using_distributed else None
     val_sampler = DistributedSampler(val_dataset, shuffle=False) if using_distributed else None
 
-    collate_fn = make_collate_fn(
-        image_processor, max_num_patches=(args.max_pixels_sqrt**2 // 16**2)
-    )
+    collate_fn = make_collate_fn(image_processor, max_num_patches=(args.max_pixels_sqrt**2 // 16**2))
 
     train_loader = DataLoader(
         train_dataset,
@@ -193,12 +185,8 @@ def main():
         q_dino = q_dino / q_dino.norm(p=2, dim=-1, keepdim=True)
         q_siglip = q_siglip / q_siglip.norm(p=2, dim=-1, keepdim=True)
 
-        sim_dino, lab_dino = _distributed_topk(
-            q_dino, keys_dino, key_labels, args.k_neighbors, using_distributed
-        )
-        sim_siglip, lab_siglip = _distributed_topk(
-            q_siglip, keys_siglip, key_labels, args.k_neighbors, using_distributed
-        )
+        sim_dino, lab_dino = _distributed_topk(q_dino, keys_dino, key_labels, args.k_neighbors, using_distributed)
+        sim_siglip, lab_siglip = _distributed_topk(q_siglip, keys_siglip, key_labels, args.k_neighbors, using_distributed)
 
         votes_dino = class_votes(sim_dino, lab_dino, num_classes, args.temperature)
         votes_siglip = class_votes(sim_siglip, lab_siglip, num_classes, args.temperature)
