@@ -162,6 +162,7 @@ venv.bak/
 **/.opencode
 **/.pytest_tmp/**
 **/.pytest_tmp
+**/.vscode
 
 # Spyder project settings
 .spyderproject
