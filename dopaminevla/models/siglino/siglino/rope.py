@@ -48,7 +48,7 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     if freqs_cis.ndim == 3:
         freqs_cis = freqs_cis.unsqueeze(-2)
     elif pos_t is not None:
-        # Keep all ops in real-land for ONNX compat (no complex index/unsqueeze)
+        # Keep all ops in real-land (no complex index/unsqueeze)
         freqs_cis = torch.view_as_complex(torch.view_as_real(freqs_cis)[pos_t.long()].unsqueeze(-3))
     else:
         freqs_cis = reshape_for_broadcast(freqs_cis, xq_)

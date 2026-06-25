@@ -10,9 +10,6 @@ dependencies = [
     "ggml-python",
     "matplotlib",
     "numpy",
-    "onnx",
-    "onnxscript",
-    "onnxruntime",
     "gguf",
     "open-clip-torch",
     "pillow",
@@ -28,7 +25,6 @@ dependencies = [
     "setuptools",
     "types-setuptools",
     "pytest",
-    "optimum[onnxruntime]",
     "num2words",
 ]
 

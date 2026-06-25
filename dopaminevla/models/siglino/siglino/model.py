@@ -418,7 +418,7 @@ class SigLino(nn.Module):
 
         Patch-index approach: uses the sequence position j (0..L-1) to derive
         row = j // W, col = j %% W per image. Avoids any data-dependent tensor sizes
-        (no torch.arange(max_H)), making it compatible with torch.export ONNX.
+        (no torch.arange(max_H)).
         """
         N = batch_size
         R = 1 + self.n_storage_tokens  # CLS + registers
