@@ -1,3 +1,6 @@
+import pathlib
+from typing import Any
+
 import pytest
 import torch
 from PIL import Image
@@ -17,27 +20,27 @@ from dopaminevla.models.siglino.siglino.configs import MoEArgs
 
 
 @pytest.fixture(scope="module")
-def dense_30m_args():
+def dense_30m_args() -> SigLinoArgs:
     return siglino_configs["dense-30M"]
 
 
 @pytest.fixture(scope="module")
-def dense_70m_args():
+def dense_70m_args() -> SigLinoArgs:
     return siglino_configs["dense-70M"]
 
 
 @pytest.fixture(scope="module")
-def siglino_015b_args():
+def siglino_015b_args() -> SigLinoArgs:
     return siglino_configs["siglino-0.15B"]
 
 
 @pytest.fixture(scope="module")
-def dummy_input():
+def dummy_input() -> torch.Tensor:
     return torch.randn(1, 3, 224, 224)
 
 
 class TestImports:
-    def test_all_exports_exist(self):
+    def test_all_exports_exist(self) -> None:
         assert SigLino is not None
         assert SigLinoArgs is not None
         assert SigLinoConfig is not None
@@ -54,49 +57,49 @@ class TestImports:
 
 
 class TestSigLinoArgs:
-    def test_default_creation(self):
+    def test_default_creation(self) -> None:
         args = SigLinoArgs()
         assert args.dim == 768
         assert args.n_layers == 18
         assert args.moe_dim == 768
 
-    def test_moe_args_defaults(self):
+    def test_moe_args_defaults(self) -> None:
         args = SigLinoArgs()
         assert isinstance(args.moe_args, MoEArgs)
         assert args.moe_args.num_experts == 16
 
-    def test_dense_config_has_moe_dim_zero(self):
+    def test_dense_config_has_moe_dim_zero(self) -> None:
         args = siglino_configs["dense-30M"]
         assert args.moe_dim == 0
         assert args.first_n_layers_dense == 12
 
-    def test_siglino_config_moe_nonzero(self):
+    def test_siglino_config_moe_nonzero(self) -> None:
         args = siglino_configs["siglino-0.15B"]
         assert args.moe_dim == 384
         assert args.moe_args.num_experts == 28
 
 
 class TestSigLinoConfig:
-    def test_create_from_scratch(self):
+    def test_create_from_scratch(self) -> None:
         config = SigLinoConfig()
         assert config.model_type == "siglino"
         assert config.hidden_size == 768
 
-    def test_to_siglino_args_roundtrip(self):
+    def test_to_siglino_args_roundtrip(self) -> None:
         config = SigLinoConfig(hidden_size=512, num_hidden_layers=12, num_attention_heads=8)
         args = config.to_siglino_args()
         assert args.dim == 512
         assert args.n_layers == 12
         assert args.n_heads == 8
 
-    def test_from_siglino_args(self):
+    def test_from_siglino_args(self) -> None:
         args = SigLinoArgs(dim=384, n_layers=12, n_heads=6)
         config = SigLinoConfig.from_siglino_args(args)
         assert config.hidden_size == 384
         assert config.num_hidden_layers == 12
         assert config.num_attention_heads == 6
 
-    def test_from_hub_config(self):
+    def test_from_hub_config(self) -> None:
         hub_dict = {
             "dim": 512,
             "n_layers": 12,
@@ -112,7 +115,7 @@ class TestSigLinoConfig:
         assert config.num_attention_heads == 8
         assert config.num_key_value_heads == 8
 
-    def test_hub_config_roundtrip(self):
+    def test_hub_config_roundtrip(self) -> None:
         config = SigLinoConfig(hidden_size=768, num_hidden_layers=18, num_attention_heads=12)
         args = config.to_siglino_args()
         config2 = SigLinoConfig.from_siglino_args(args)
@@ -120,13 +123,13 @@ class TestSigLinoConfig:
         assert config2.num_hidden_layers == config.num_hidden_layers
 
     @pytest.mark.slow
-    def test_from_pretrained_hub(self):
+    def test_from_pretrained_hub(self) -> None:
         config = SigLinoConfig.from_pretrained("tiiuae/siglino-70M")
         assert config.hidden_size == 512
         assert config.num_hidden_layers == 12
         assert config.num_attention_heads == 8
 
-    def test_save_and_load_local_config(self, tmp_path):
+    def test_save_and_load_local_config(self, tmp_path: pathlib.Path) -> None:
         config = SigLinoConfig(hidden_size=384, num_hidden_layers=12)
         config.save_pretrained(tmp_path)
         loaded = SigLinoConfig.from_pretrained(tmp_path)
@@ -137,13 +140,13 @@ class TestSigLinoConfig:
 class TestSigLinoModelCPU:
     """CPU forward tests for dense and MoE configurations."""
 
-    def _create_model(self, args: SigLinoArgs):
+    def _create_model(self, args: SigLinoArgs) -> SigLino:
         model = SigLino(args)
         model.init_weights()
         model.eval()
         return model
 
-    def _run_forward(self, model):
+    def _run_forward(self, model: SigLino) -> list[dict[str, Any]]:
         out = []
         for n in range(1, 5):
             x = torch.randn(1, 3, 224, 224)
@@ -152,35 +155,35 @@ class TestSigLinoModelCPU:
             assert "siglino" in out[-1]["patch_features"]
         return out
 
-    def test_dense_30m_cpu_forward(self, dense_30m_args):
+    def test_dense_30m_cpu_forward(self, dense_30m_args: SigLinoArgs) -> None:
         model = self._create_model(dense_30m_args)
         out = self._run_forward(model)
         for o in out:
             feats = o["patch_features"]["siglino"]
             assert feats.ndim == 3
 
-    def test_dense_70m_cpu_forward(self, dense_70m_args):
+    def test_dense_70m_cpu_forward(self, dense_70m_args: SigLinoArgs) -> None:
         model = self._create_model(dense_70m_args)
         out = self._run_forward(model)
         for o in out:
             feats = o["patch_features"]["siglino"]
             assert feats.ndim == 3
 
-    def test_moe_015b_cpu_forward(self, siglino_015b_args):
+    def test_moe_015b_cpu_forward(self, siglino_015b_args: SigLinoArgs) -> None:
         model = self._create_model(siglino_015b_args)
         out = self._run_forward(model)
         for o in out:
             feats = o["patch_features"]["siglino"]
             assert feats.ndim == 3
 
-    def test_batched_input(self, dense_30m_args):
+    def test_batched_input(self, dense_30m_args: SigLinoArgs) -> None:
         model = self._create_model(dense_30m_args)
         x = torch.randn(2, 3, 224, 224)
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14], [14, 14]]))
         feats = out["patch_features"]["siglino"]
         assert feats.shape[0] == 2
 
-    def test_no_nan_in_output(self, dense_30m_args):
+    def test_no_nan_in_output(self, dense_30m_args: SigLinoArgs) -> None:
         """Verify random-init model produces no NaN (init_weights was called)."""
         model = self._create_model(dense_30m_args)
         out = self._run_forward(model)
@@ -200,13 +203,13 @@ _HF_SMALL = dict(
 
 
 class TestSigLinoHFModel:
-    def test_create_hf_model(self):
+    def test_create_hf_model(self) -> None:
         config = SigLinoConfig(**_HF_SMALL)
         model = SigLinoHFModel(config)
         assert isinstance(model, SigLinoHFModel)
         assert model.config.hidden_size == 384
 
-    def test_hf_forward(self):
+    def test_hf_forward(self) -> None:
         config = SigLinoConfig(**_HF_SMALL)
         model = SigLinoHFModel(config)
         model.eval()
@@ -214,7 +217,7 @@ class TestSigLinoHFModel:
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))
         assert "patch_features" in out
 
-    def test_hf_state_dict_keys(self):
+    def test_hf_state_dict_keys(self) -> None:
         config = SigLinoConfig(**_HF_SMALL)
         model = SigLinoHFModel(config)
         sd = model.state_dict()
@@ -222,7 +225,7 @@ class TestSigLinoHFModel:
         assert any(k.startswith("model.img_projector.") for k in sd.keys())
         assert any(k.startswith("model.cls_token") for k in sd.keys())
 
-    def test_from_pretrained_hub(self):
+    def test_from_pretrained_hub(self) -> None:
         model = SigLinoHFModel.from_pretrained("tiiuae/siglino-70M")
         model.eval()
         x = torch.randn(1, 3, 224, 224)
@@ -231,7 +234,7 @@ class TestSigLinoHFModel:
         assert out["patch_features"]["siglino"].shape[-1] == 512
 
     @staticmethod
-    def _assert_save_load_preserves_weights(original_model, tmp_path):
+    def _assert_save_load_preserves_weights(original_model: SigLinoPreTrainedModel, tmp_path: pathlib.Path) -> SigLinoHFModel:
         """Verify save_pretrained/from_pretrained cycle preserves all weights."""
         original_model.save_pretrained(tmp_path)
         loaded_model = SigLinoHFModel.from_pretrained(tmp_path)
@@ -250,7 +253,7 @@ class TestSigLinoHFModel:
 
         return loaded_model
 
-    def test_save_and_load_moe_hf(self, tmp_path):
+    def test_save_and_load_moe_hf(self, tmp_path: pathlib.Path) -> None:
         # Initialize a miniature MoE architecture.
         config = SigLinoConfig(
             hidden_size=64,
@@ -284,11 +287,9 @@ class TestSigLinoHFModel:
             loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
 
         assert not loaded_siglino_feat.isnan().any(), "Loaded MoE model produced NaN (weights and buffers verified)."
-        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
-            "MoE forward output changed after save/load (weights verified above)."
-        )
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), "MoE forward output changed after save/load (weights verified above)."
 
-    def test_save_and_load_local_hf(self, tmp_path):
+    def test_save_and_load_local_hf(self, tmp_path: pathlib.Path) -> None:
         config = SigLinoConfig(**_HF_SMALL)
         original_model = SigLinoHFModel(config)
         original_model.eval()
@@ -309,17 +310,15 @@ class TestSigLinoHFModel:
             loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
 
         assert not loaded_siglino_feat.isnan().any(), "Loaded model produced NaN (weights and buffers verified)."
-        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
-            "Forward output changed after save/load (weights verified above)."
-        )
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), "Forward output changed after save/load (weights verified above)."
 
 
 class TestSigLinoImageProcessor:
-    def test_create_processor(self):
+    def test_create_processor(self) -> None:
         processor = SigLinoImageProcessor()
         assert processor is not None
 
-    def test_process_single_image(self):
+    def test_process_single_image(self) -> None:
         processor = SigLinoImageProcessor(min_pixels=128 * 128, max_pixels=256 * 256)
         img = Image.new("RGB", (224, 224))
         out = processor(img)
@@ -327,7 +326,7 @@ class TestSigLinoImageProcessor:
         assert "padding_mask" in out
         assert "spatial_shape" in out
 
-    def test_process_multiple_images(self):
+    def test_process_multiple_images(self) -> None:
         processor = SigLinoImageProcessor(min_pixels=128 * 128, max_pixels=256 * 256)
         imgs = [Image.new("RGB", (224, 224)) for _ in range(3)]
         out = processor(imgs)
@@ -335,7 +334,7 @@ class TestSigLinoImageProcessor:
 
 
 class TestLoadSiglinoModel:
-    def test_load_with_config_name(self):
+    def test_load_with_config_name(self) -> None:
         model, processor = load_siglino_model(
             checkpoint_path=None,
             config_name="dense-30M",
@@ -344,7 +343,7 @@ class TestLoadSiglinoModel:
         assert isinstance(model, SigLino)
         assert processor is not None
 
-    def test_auto_device_cpu(self):
+    def test_auto_device_cpu(self) -> None:
         model, processor = load_siglino_model(
             checkpoint_path=None,
             config_name="dense-30M",
@@ -354,18 +353,18 @@ class TestLoadSiglinoModel:
 
 
 class TestDeviceAgnostic:
-    def test_flex_attn_disabled_on_cpu(self):
+    def test_flex_attn_disabled_on_cpu(self) -> None:
         model = SigLino(siglino_configs["dense-30M"])
         cpu = torch.device("cpu")
         assert not model._use_flex_attn_on_device(cpu)
 
-    def test_compile_auto_disabled_on_cpu(self, dense_30m_args):
+    def test_compile_auto_disabled_on_cpu(self, dense_30m_args: SigLinoArgs) -> None:
         model = SigLino(dense_30m_args)
         x = torch.randn(1, 3, 224, 224)
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))
         assert "patch_features" in out
 
-    def test_no_nan_in_random_forward(self, dense_30m_args):
+    def test_no_nan_in_random_forward(self, dense_30m_args: SigLinoArgs) -> None:
         """Sanity: random weights with init_weights produce finite output."""
         model = SigLino(dense_30m_args)
         model.init_weights()
@@ -380,7 +379,7 @@ class TestDeviceAgnostic:
 class TestONNXWrapper:
     """ONNX export wrapper tests (no optimum dependency needed)."""
 
-    def test_onnx_wrapper_creation(self):
+    def test_onnx_wrapper_creation(self) -> None:
         config = SigLinoConfig(
             hidden_size=64,
             num_hidden_layers=2,
@@ -399,7 +398,7 @@ class TestONNXWrapper:
         for t in out:
             assert isinstance(t, torch.Tensor)
 
-    def test_export_to_onnx_and_verify(self, tmp_path):
+    def test_export_to_onnx_and_verify(self, tmp_path: pathlib.Path) -> None:
         import numpy as np
 
         try:
@@ -443,7 +442,7 @@ class TestONNXWrapper:
                 err_msg=f"Mathematical divergence detected at output index {i}.",
             )
 
-    def test_onnx_wrapper_forward(self):
+    def test_onnx_wrapper_forward(self) -> None:
         config = SigLinoConfig(
             hidden_size=64,
             num_hidden_layers=2,
@@ -468,11 +467,11 @@ class TestONNXWrapper:
 
 
 class TestQuantizeCPU:
-    def test_quantize_cpu_model_fn_available(self):
+    def test_quantize_cpu_model_fn_available(self) -> None:
         """quantize_cpu_model should be a callable function."""
         assert callable(quantize_cpu_model)
 
-    def test_quantize_cpu_model_does_not_crash(self, dense_30m_args):
+    def test_quantize_cpu_model_does_not_crash(self, dense_30m_args: SigLinoArgs) -> None:
         """Apply torchao quantize to a small model; verify it still runs."""
         model = SigLino(dense_30m_args)
         model.init_weights()
