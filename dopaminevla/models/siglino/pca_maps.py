@@ -150,8 +150,8 @@ def render_pca_image(
 
 
 def load_model_and_processor(
-    ckpt_path: str,
-    config_name: str,
+    ckpt_path: str | None = None,
+    config_name: str | None = None,
     device: str | None = None,
     min_pixels: int = 128 * 128,
     max_pixels: int = 256 * 256,
@@ -159,35 +159,15 @@ def load_model_and_processor(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print(f"Loading model with config: {config_name}")
+    print(f"Loading model with config: {config_name or '(auto-detect)'}")
 
-    is_hub_id = ckpt_path and "/" in ckpt_path and not os.path.isdir(ckpt_path) and not os.path.isfile(ckpt_path)
-
-    if is_hub_id:
-        print(f"Loading from HuggingFace Hub: {ckpt_path}")
-        # Hub checkpoints are bare SigLino (no HF wrapper prefix), so download
-        # the checkpoint and load via load_siglino_model (bare SigLino).
-        from huggingface_hub import hf_hub_download
-
-        # Try safetensors first, fall back to .bin
-        try:
-            ckpt_file = hf_hub_download(repo_id=ckpt_path, filename="model.safetensors")
-        except Exception:
-            ckpt_file = hf_hub_download(repo_id=ckpt_path, filename="pytorch_model.bin")
-
-        model, processor = load_siglino_model(
-            checkpoint_path=ckpt_file,
-            config_name=config_name,
-            device=device,
-            max_pixels=max_pixels,
-        )
-    else:
-        model, processor = load_siglino_model(
-            checkpoint_path=ckpt_path,
-            config_name=config_name,
-            device=device,
-            max_pixels=max_pixels,
-        )
+    model, processor = load_siglino_model(
+        checkpoint_path=ckpt_path,
+        config_name=config_name,
+        device=device,
+        resolve=True,
+        max_pixels=max_pixels,
+    )
 
     # Apply INT8 dynamic quantization for CPU inference
     if device == "cpu" or (isinstance(device, torch.device) and device.type == "cpu"):
@@ -270,13 +250,13 @@ def main() -> None:
     parser.add_argument(
         "--ckpt_path",
         type=str,
-        default="tiiuae/siglino-30M",
-        help="Path to checkpoint or HF hub model ID",
+        default=None,
+        help="Path to checkpoint, HF hub model ID, or omit to auto-resolve from --config_name",
     )
     parser.add_argument("--input_dir", type=str, required=True, help="Directory containing images")
     parser.add_argument("--output_path", type=str, required=True, help="Base output directory")
     parser.add_argument("--num_samples", type=int, default=10, help="Number of images to sample")
-    parser.add_argument("--config_name", type=str, default="siglino-0.3B")
+    parser.add_argument("--config_name", type=str, default="dense-30M")
     parser.add_argument("--device", type=str, default=None, help="Device (default: auto-detect)")
     parser.add_argument("--max_num_patches", type=int, default=256)
     args = parser.parse_args()
