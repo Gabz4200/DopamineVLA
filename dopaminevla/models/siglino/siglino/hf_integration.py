@@ -72,6 +72,7 @@ class SigLinoConfig(PretrainedConfig):
         use_flex_attn: bool = True,
         **kwargs: Any,
     ) -> None:
+        hidden_size = kwargs.pop("dim", hidden_size)
         num_hidden_layers = kwargs.pop("n_layers", num_hidden_layers)
         num_attention_heads = kwargs.pop("n_heads", num_attention_heads)
         num_key_value_heads = kwargs.pop("n_kv_heads", num_key_value_heads)
