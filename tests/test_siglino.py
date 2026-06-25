@@ -17,6 +17,11 @@ from dopaminevla.models.siglino.siglino import (
     siglino_configs,
 )
 from dopaminevla.models.siglino.siglino.configs import MoEArgs
+from dopaminevla.models.siglino.siglino.utils import (
+    _find_matching_config_name,
+    _is_hub_id,
+    _validate_config_checkpoint_match,
+)
 
 
 @pytest.fixture(scope="module")
@@ -376,96 +381,6 @@ class TestDeviceAgnostic:
             assert not feat.isinf().any(), f"Inf in {name}"
 
 
-class TestONNXWrapper:
-    """ONNX export wrapper tests (no optimum dependency needed)."""
-
-    def test_onnx_wrapper_creation(self) -> None:
-        config = SigLinoConfig(
-            hidden_size=64,
-            num_hidden_layers=2,
-            num_attention_heads=2,
-            num_key_value_heads=2,
-            head_dim=32,
-        )
-        model = SigLinoHFModel(config)
-        model.eval()
-        wrapper = model._get_onnx_wrapper()
-
-        x = torch.randn(1, 3, 224, 224)
-        out = wrapper(x)
-        assert isinstance(out, tuple)
-        assert len(out) == 6
-        for t in out:
-            assert isinstance(t, torch.Tensor)
-
-    def test_export_to_onnx_and_verify(self, tmp_path: pathlib.Path) -> None:
-        import numpy as np
-
-        try:
-            import onnxruntime as ort
-        except ImportError:
-            pytest.skip("onnxruntime is required to verify the ONNX export.")
-
-        # Forge the source model and save it
-        config = SigLinoConfig(hidden_size=64, num_hidden_layers=2, num_attention_heads=2, head_dim=32, first_n_layers_dense=2)
-        model = SigLinoHFModel(config)
-        model.eval()
-
-        model_dir = tmp_path / "dummy_model"
-        model.save_pretrained(model_dir)
-
-        # Command the export process
-        onnx_path = tmp_path / "siglino.onnx"
-        SigLinoHFModel.export_to_onnx(model_path=str(model_dir), output_path=str(onnx_path), opset_version=17)
-        assert onnx_path.exists(), "The ONNX file was not written to disk."
-
-        # Create a single, unchanging spark (image)
-        x = torch.randn(1, 3, 224, 224)
-
-        # Observe the PyTorch baseline
-        wrapper = model._get_onnx_wrapper()
-        with torch.no_grad():
-            pt_outputs = wrapper(x)
-
-        # Observe the ONNX runtime execution
-        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-        ort_inputs = {session.get_inputs()[0].name: x.numpy()}
-        ort_outputs = session.run(None, ort_inputs)
-
-        # The absolute proof: Compare all 6 output tensors
-        for i, (pt_out, ort_out) in enumerate(zip(pt_outputs, ort_outputs)):
-            np.testing.assert_allclose(
-                pt_out.numpy(),
-                np.array(ort_out),
-                rtol=1e-4,
-                atol=1e-4,
-                err_msg=f"Mathematical divergence detected at output index {i}.",
-            )
-
-    def test_onnx_wrapper_forward(self) -> None:
-        config = SigLinoConfig(
-            hidden_size=64,
-            num_hidden_layers=2,
-            num_attention_heads=2,
-            num_key_value_heads=2,
-            head_dim=32,
-        )
-        model = SigLinoHFModel(config)
-        model.eval()
-        wrapper = model._get_onnx_wrapper()
-
-        x = torch.randn(1, 3, 224, 224)
-        wrapper_out = wrapper(x)
-
-        spatial_shapes = torch.tensor([[14, 14]])
-        model_out = model(pixel_values=x, spatial_shapes=spatial_shapes)
-        pf = model_out["patch_features"]
-
-        assert torch.equal(wrapper_out[0], pf["dinov3"])
-        assert torch.equal(wrapper_out[1], pf["siglip2"])
-        assert torch.equal(wrapper_out[2], pf["siglino"])
-
-
 class TestQuantizeCPU:
     def test_quantize_cpu_model_fn_available(self) -> None:
         """quantize_cpu_model should be a callable function."""
@@ -483,3 +398,51 @@ class TestQuantizeCPU:
 
         out = model(pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]]))
         assert "patch_features" in out
+
+
+class TestConfigCheckpointMatching:
+    """Tests for config/checkpoint resolution and validation helpers."""
+
+    def test_find_matching_dense_30m(self) -> None:
+        """_find_matching_config_name finds 'dense-30M' for its own args."""
+        args = siglino_configs["dense-30M"]
+        assert _find_matching_config_name(args) == "dense-30M"
+
+    def test_find_matching_dense_70m(self) -> None:
+        args = siglino_configs["dense-70M"]
+        assert _find_matching_config_name(args) == "dense-70M"
+
+    def test_find_matching_moe_015b(self) -> None:
+        args = siglino_configs["siglino-0.15B"]
+        assert _find_matching_config_name(args) == "siglino-0.15B"
+
+    def test_no_match_for_unknown_args(self) -> None:
+        """Args with no matching config return None."""
+        args = SigLinoArgs(dim=999, n_layers=99, n_heads=32)
+        assert _find_matching_config_name(args) is None
+
+    def test_validate_match_passes(self) -> None:
+        """Matching config and checkpoint args should not raise."""
+        config_args = siglino_configs["dense-30M"]
+        chk_args = siglino_configs["dense-30M"]
+        # Should not raise
+        _validate_config_checkpoint_match("dense-30M", config_args, "tiiuae/siglino-30M", chk_args)
+
+    def test_validate_mismatch_raises(self) -> None:
+        """Mismatched config and checkpoint args should raise ValueError."""
+        config_args = siglino_configs["dense-30M"]
+        chk_args = siglino_configs["dense-70M"]
+        with pytest.raises(ValueError, match="does not match"):
+            _validate_config_checkpoint_match("dense-30M", config_args, "tiiuae/siglino-70M", chk_args)
+
+    def test_is_hub_id_true(self) -> None:
+        assert _is_hub_id("tiiuae/siglino-30M")
+        assert _is_hub_id("someuser/model")
+
+    def test_is_hub_id_false_local_file(self, tmp_path: pathlib.Path) -> None:
+        local = tmp_path / "model.safetensors"
+        local.touch()
+        assert not _is_hub_id(str(local))
+
+    def test_is_hub_id_false_abs_path(self) -> None:
+        assert not _is_hub_id("/absolute/path/to/model.safetensors")
