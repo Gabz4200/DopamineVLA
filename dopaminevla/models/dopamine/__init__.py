@@ -14,4 +14,4 @@
 
 from .dopamine import *
 
-__all__ = []
+__all__: list[str] = []
