@@ -40,9 +40,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor, device: str 
     return freqs_cis.view(*shape)
 
 
-def apply_rotary_emb(
-    xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor, pos_t: torch.Tensor | None = None, device: str = "cpu"
-) -> tuple[torch.Tensor, torch.Tensor]:
+def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor, pos_t: torch.Tensor | None = None, device: str = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
     """Apply rotary embeddings to query and key tensors."""
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
@@ -136,9 +134,7 @@ def apply_golden_freqs_cis_to_visual_pos(freqs_hFP: torch.Tensor, pos_BSP: torch
     return torch.polar(torch.ones_like(theta_thF.float()), theta_thF.float())
 
 
-def apply_golden_rotary_emb(
-    input_BShd: torch.Tensor, freqs_cis_thF: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu"
-) -> torch.Tensor:
+def apply_golden_rotary_emb(input_BShd: torch.Tensor, freqs_cis_thF: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu") -> torch.Tensor:
     """Apply golden rotary embedding to image tokens only."""
     img_mask_BS = E.reduce(~torch.isnan(pos_BSP), "b s p -> b s", reduction="all")
     input_thd = input_BShd[img_mask_BS]

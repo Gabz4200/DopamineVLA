@@ -17,8 +17,9 @@
 # Main model implementation for Falcon Vision Encoder
 # A pure vision transformer distilled from DINOv3 and SigLIP2
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Self
 
 import einops as E
 import torch
@@ -46,7 +47,7 @@ class SigLinoFeatures:
     features_siglip: torch.Tensor
     features_dinov3: torch.Tensor
     features_siglino: torch.Tensor
-    grid_hw: Tuple[int, int]
+    grid_hw: tuple[int, int]
 
 
 class PytorchGELUTanh(nn.Module):
@@ -55,7 +56,7 @@ class PytorchGELUTanh(nn.Module):
 
 
 class Siglip2MLP(nn.Module):
-    def __init__(self, hidden_size: int, intermediate_size: int):
+    def __init__(self, hidden_size: int, intermediate_size: int) -> None:
         super().__init__()
         self.activation_fn = PytorchGELUTanh()
         self.fc1 = nn.Linear(hidden_size, intermediate_size)
@@ -68,7 +69,7 @@ class Siglip2MLP(nn.Module):
         return hidden_states
 
 
-def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None):
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None) -> torch.Tensor:
     bsz, src_len = mask.size()
     tgt_len = tgt_len if tgt_len is not None else src_len
     expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
@@ -79,7 +80,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = N
 class Siglip2MultiheadAttentionPoolingHead(nn.Module):
     """Multihead Attention Pooling for SigLIP2-style summary features."""
 
-    def __init__(self, hidden_size: int, num_attention_heads: int, output_dim: int):
+    def __init__(self, hidden_size: int, num_attention_heads: int, output_dim: int) -> None:
         super().__init__()
         self.probe = nn.Parameter(torch.randn(1, 1, hidden_size))
         self.attention = nn.MultiheadAttention(hidden_size, num_attention_heads, batch_first=True)
@@ -108,7 +109,7 @@ class Siglip2MultiheadAttentionPoolingHead(nn.Module):
 class Adapter(nn.Module):
     """Feature adapter for projecting to teacher dimensions."""
 
-    def __init__(self, in_dim: int, out_dim: int, bias: bool = True):
+    def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
         self.fc1 = nn.Linear(in_dim, out_dim)
         self.norm = nn.LayerNorm(out_dim)
@@ -122,7 +123,7 @@ class Adapter(nn.Module):
         x = self.fc2(x)
         return x
 
-    def init_weights(self):
+    def init_weights(self) -> None:
         nn.init.trunc_normal_(self.fc1.weight, mean=0.0, std=0.01)
         nn.init.trunc_normal_(self.fc2.weight, mean=0.0, std=0.01)
         nn.init.zeros_(self.fc1.bias)
@@ -130,7 +131,7 @@ class Adapter(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: SigLinoArgs):
+    def __init__(self, layer_id: int, args: SigLinoArgs) -> None:
         super().__init__()
         self.dim = args.dim
         self.parameterized_norm = args.parameterized_norm
@@ -202,7 +203,7 @@ class TransformerBlock(nn.Module):
 
         return out
 
-    def init_weights(self, buffer_device: torch.device | None = None):
+    def init_weights(self, buffer_device: torch.device | None = None) -> None:
         if buffer_device is None:
             buffer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.attention.init_weights(self.weight_init_std)
@@ -217,7 +218,7 @@ class SigLino(nn.Module):
     SigLino - Agglomeration Mixture of Experts Vision Foundation Model
     """
 
-    def __init__(self, args: SigLinoArgs):
+    def __init__(self, args: SigLinoArgs) -> None:
         super().__init__()
         self.args = args
         self.n_layers = args.n_layers
@@ -250,7 +251,7 @@ class SigLino(nn.Module):
         self.norm = nn.RMSNorm(args.dim, eps=args.norm_eps)
 
         # Teacher adapters
-        self.teachers = dict(zip(args.teachers, args.teachers_dim))
+        self.teachers: dict[str, int] = dict(zip(args.teachers, args.teachers_dim))
         dinov3_dim = self.teachers.get("dinov3", 1280)
         siglip2_dim = self.teachers.get("siglip2", 1152)
 
@@ -267,7 +268,7 @@ class SigLino(nn.Module):
 
         # Cache for block masks (instance-level, not shared across instances)
         self._cached_block_mask: BlockMask | None = None
-        self._cached_mask_key: tuple | None = None
+        self._cached_mask_key: tuple[int, int, float, torch.device] | None = None
 
         # Precompute RoPE buffers on CPU (survives meta-device init context)
         self._post_init()
@@ -275,7 +276,7 @@ class SigLino(nn.Module):
     def _precompute_freqs_cis(self, head_dim: int, args: SigLinoArgs) -> torch.Tensor:
         return precompute_freqs_cis(head_dim, args.max_seq_len, args.rope_theta)
 
-    def _post_init(self):
+    def _post_init(self) -> None:
         head_dim = self.args.head_dim or self.args.dim // self.args.n_heads
         d = head_dim // 2
         self.freqs_cis_golden = self._precompute_golden_freqs_cis(d, self.args)
@@ -284,7 +285,7 @@ class SigLino(nn.Module):
     def _precompute_golden_freqs_cis(self, head_dim: int, args: SigLinoArgs) -> torch.Tensor:
         return precompute_golden_freqs_cis(args.n_heads, head_dim, args.rope_min_freqs, args.rope_max_freqs)
 
-    def _apply(self, fn, recurse: bool = True):
+    def _apply(self, fn: Callable[[torch.Tensor], torch.Tensor], recurse: bool = True) -> Self:
         # Workaround to prevent casting complex RoPE buffers to real dtypes
         # (which triggers a warning and discards the imaginary part).
 
@@ -320,7 +321,7 @@ class SigLino(nn.Module):
 
         return self
 
-    def init_weights(self, buffer_device: torch.device | None = None):
+    def init_weights(self, buffer_device: torch.device | None = None) -> None:
         if self.freqs_cis is None:
             self._post_init()
         buffer_device = buffer_device or self.freqs_cis.device
@@ -396,7 +397,7 @@ class SigLino(nn.Module):
             valid_kv = full_mask.unsqueeze(-2)
             mask_matrix = valid_q & valid_kv
 
-            def mask_mod(b, h, q_idx, kv_idx):
+            def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
                 return mask_matrix[b, q_idx, kv_idx]
 
             block_mask = create_attention_mask(mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size))

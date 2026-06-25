@@ -17,6 +17,8 @@
 # Utilities for Falcon Vision
 # Model loading and image preprocessing without tokenizer dependency
 
+from typing import Any, TypeVar
+
 import torch
 
 from .configs import siglino_configs
@@ -29,7 +31,7 @@ def load_siglino_model(
     config_name: str = "siglino-0.3B",
     device: str | torch.device | None = None,
     dtype: torch.dtype | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> tuple[SigLino, SigLinoImageProcessor]:
     """
     Load a SigLino model from a checkpoint.
@@ -75,7 +77,10 @@ def load_siglino_model(
     return model, image_processor
 
 
-def quantize_cpu_model(model: torch.nn.Module) -> torch.nn.Module:
+_M = TypeVar("_M", bound=torch.nn.Module)
+
+
+def quantize_cpu_model(model: _M) -> _M:
     """Apply torchao INT8 dynamic quantization for CPU inference."""
     try:
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_

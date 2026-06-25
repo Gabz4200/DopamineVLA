@@ -37,7 +37,7 @@ class MoEArgs:
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, activation: str = "silu"):
+    def __init__(self, dim: int, hidden_dim: int, activation: str = "silu") -> None:
         super().__init__()
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
@@ -49,7 +49,7 @@ class FeedForward(nn.Module):
             return self.w2(2 * F.relu(self.w1(x)).square() * self.w3(x))
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
-    def init_weights(self, init_std: float = 0.02):
+    def init_weights(self, init_std: float = 0.02) -> None:
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.w3.weight, mean=0.0, std=init_std)
         nn.init.zeros_(self.w2.weight)
@@ -84,7 +84,7 @@ def _run_experts_for_loop(
 
 
 class GroupedExperts(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, num_experts: int, activation: str = "silu"):
+    def __init__(self, dim: int, hidden_dim: int, num_experts: int, activation: str = "silu") -> None:
         super().__init__()
         self.num_experts = num_experts
         self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
@@ -95,7 +95,7 @@ class GroupedExperts(nn.Module):
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert, self.activation)
 
-    def init_weights(self, init_std: float):
+    def init_weights(self, init_std: float) -> None:
         nn.init.trunc_normal_(self.w1, mean=0.0, std=0.02)
         nn.init.zeros_(self.w2)
         nn.init.trunc_normal_(self.w3, mean=0.0, std=init_std)
@@ -110,7 +110,7 @@ class TokenChoiceTopKRouter(nn.Module):
         score_func: str = "sigmoid",
         route_norm: bool = False,
         route_scale: float = 1.0,
-    ):
+    ) -> None:
         super().__init__()
         self.gate = nn.Linear(dim, num_experts, bias=False)
         self.num_experts = num_experts
@@ -119,7 +119,7 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_norm = route_norm
         self.route_scale = route_scale
 
-    def forward(self, x: torch.Tensor, expert_bias: torch.Tensor | None = None):
+    def forward(self, x: torch.Tensor, expert_bias: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         scores = self.gate(x)
         if self.score_func == "sigmoid":
             scores = torch.sigmoid(scores.float())
@@ -144,12 +144,12 @@ class TokenChoiceTopKRouter(nn.Module):
         )
         return top_scores, selected_experts_indices, num_tokens_per_expert
 
-    def init_weights(self, init_std: float):
+    def init_weights(self, init_std: float) -> None:
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
 
 
 class MoE(nn.Module):
-    def __init__(self, moe_args: MoEArgs, dim: int, hidden_dim: int):
+    def __init__(self, moe_args: MoEArgs, dim: int, hidden_dim: int) -> None:
         super().__init__()
         num_experts = moe_args.num_experts
 
@@ -215,7 +215,7 @@ class MoE(nn.Module):
         out = out.scatter_add(dim=0, index=token_indices_expanded, src=routed_output)
         return out.view(bs, slen, dim)
 
-    def init_weights(self, init_std: float, buffer_device: torch.device | None = None):
+    def init_weights(self, init_std: float, buffer_device: torch.device | None = None) -> None:
         if buffer_device is None:
             buffer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.experts.init_weights(init_std)

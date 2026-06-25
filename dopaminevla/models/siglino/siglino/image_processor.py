@@ -100,8 +100,8 @@ class SigLinoImageProcessor(ImageProcessingMixin):
         do_resize: bool = True,
         do_rescale: bool = True,
         do_normalize: bool = True,
-        **kwargs,
-    ):
+        **kwargs: object,
+    ) -> None:
         super().__init__(**kwargs)
         self.patch_size = patch_size
         self.min_pixels = min_pixels

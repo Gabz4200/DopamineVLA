@@ -3,7 +3,6 @@ import argparse
 import glob
 import os
 import random
-from typing import List, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -12,7 +11,13 @@ import torch
 from PIL import Image
 from sklearn.decomposition import PCA
 
-from dopaminevla.models.siglino.siglino import load_siglino_model, quantize_cpu_model
+from dopaminevla.models.siglino.siglino import (
+    SigLino,
+    SigLinoHFModel,
+    SigLinoImageProcessor,
+    load_siglino_model,
+    quantize_cpu_model,
+)
 from dopaminevla.models.siglino.siglino.model import SigLinoFeatures
 
 matplotlib.use("TkAgg")
@@ -24,27 +29,26 @@ def load_image(path: str) -> Image.Image:
     return img
 
 
-def _get_n_storage_tokens(model) -> int:
+def _get_n_storage_tokens(model: SigLino | SigLinoHFModel) -> int:
     """Get n_storage_tokens from model, handling SigLinoHFModel wrapper."""
-    if hasattr(model, "n_storage_tokens"):
+    if isinstance(model, SigLino):
         return model.n_storage_tokens
-    # SigLinoHFModel wraps SigLino as self.model
     return model.model.n_storage_tokens
 
 
 @torch.inference_mode()
 def extract_patch_features(
-    model,
-    processor,
-    images: List[Image.Image],
+    model: SigLino | SigLinoHFModel,
+    processor: SigLinoImageProcessor,
+    images: list[Image.Image],
     device: torch.device | None = None,
     max_num_patches: int = 256,
-) -> List[SigLinoFeatures]:
+) -> list[SigLinoFeatures]:
     if device is None:
         device = next(model.parameters()).device
 
     dtype = next(model.parameters()).dtype
-    features_per_image: List[SigLinoFeatures] = []
+    features_per_image: list[SigLinoFeatures] = []
 
     for image in images:
         processed = processor(
@@ -94,16 +98,16 @@ def fit_and_project_pca(feats_2d: torch.Tensor, n_components: int = 3, whiten: b
 
 def render_pca_image(
     image_rgb: Image.Image,
-    projected_L3: Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]],
-    grid_hw: tuple,
+    projected_L3: tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None],
+    grid_hw: tuple[int, int],
     save_path: str,
-    title: Optional[str] = None,
-):
+    title: str | None = None,
+) -> None:
     projected_siglino, projected_siglip, projected_dinov3 = projected_L3
 
     H, W = grid_hw
 
-    def create_pca_grid(projected_features):
+    def create_pca_grid(projected_features: np.ndarray) -> np.ndarray:
         grid_hw3 = projected_features.reshape(H, W, 3).astype(np.float32)
         grid_hw3 = np.nan_to_num(grid_hw3, nan=0.0, posinf=1.0, neginf=0.0)
         grid_hw3 = 1.0 / (1.0 + np.exp(-2.0 * grid_hw3))
@@ -151,7 +155,7 @@ def load_model_and_processor(
     device: str | None = None,
     min_pixels: int = 128 * 128,
     max_pixels: int = 256 * 256,
-):
+) -> tuple[SigLino, SigLinoImageProcessor]:
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -193,7 +197,7 @@ def load_model_and_processor(
     return model, processor
 
 
-def sample_jpg_images(input_dir: str, num_samples: int = 10) -> List[str]:
+def sample_jpg_images(input_dir: str, num_samples: int = 10) -> list[str]:
     jpg_pattern = os.path.join(input_dir, "*.jpg")
     jpg_files = glob.glob(jpg_pattern)
 
@@ -214,8 +218,8 @@ def sample_jpg_images(input_dir: str, num_samples: int = 10) -> List[str]:
 def process_single_image(
     image_path: str,
     output_dir: str,
-    model,
-    processor,
+    model: SigLino | SigLinoHFModel,
+    processor: SigLinoImageProcessor,
     device: str | torch.device | None = None,
     max_num_patches: int = 256,
 ) -> None:
@@ -249,10 +253,7 @@ def process_single_image(
     output_filename = f"{image_basename}_pca_vis.png"
     output_path = os.path.join(output_dir, output_filename)
 
-    print(
-        f"Projected shapes - siglino: {projected_all_siglino.shape}, "
-        f"siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
-    )
+    print(f"Projected shapes - siglino: {projected_all_siglino.shape}, siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}")
     render_pca_image(
         image_rgb=image,
         projected_L3=(projected_all_siglino, projected_all_siglip, projected_all_dinov3),
@@ -264,7 +265,7 @@ def process_single_image(
     print(f"Saved visualization: {output_path}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize PCA of SigLino patch features")
     parser.add_argument(
         "--ckpt_path",

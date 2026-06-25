@@ -18,6 +18,8 @@
 # Supports FlexAttention (CUDA) or SDPA fallback (CPU) for device-agnostic attention
 
 
+from collections.abc import Callable
+
 import einops as E
 import torch
 import torch.nn.functional as F
@@ -64,7 +66,7 @@ class FlexAttentionWrapper(nn.Module):
     """Wrapper for flex_attention with optional compilation and aux outputs.
     Falls back to SDPA on devices without flex_attention support."""
 
-    _compiled = None
+    _compiled: Callable[..., torch.Tensor] | None = None
 
     def forward(
         self,
@@ -74,8 +76,8 @@ class FlexAttentionWrapper(nn.Module):
         block_mask: BlockMask | None = None,
         compile: bool = True,
         return_aux: bool = False,
-    ):
-        fn = flex_attention
+    ) -> torch.Tensor:
+        fn: Callable[..., torch.Tensor] = flex_attention
         if compile and device_supports_flex_attention(q.device):
             if FlexAttentionWrapper._compiled is None:
                 FlexAttentionWrapper._compiled = torch.compile(
@@ -102,6 +104,13 @@ def create_sdpa_attention_mask(full_mask: torch.Tensor) -> torch.Tensor:
 
 
 class Attention(nn.Module):
+    n_heads: int
+    n_kv_heads: int
+    n_rep: int
+    head_dim: int
+    q_dim: int
+    kv_dim: int
+
     def __init__(
         self,
         dim: int,
@@ -112,14 +121,15 @@ class Attention(nn.Module):
         enable_3d_rope: bool = False,
         use_flex_attn: bool = True,
         use_sink_attn: bool = True,
-    ):
-        super().__init__()
+    ) -> None:
         self.n_heads = n_heads
         self.n_kv_heads = n_kv_heads or n_heads
         self.n_rep = self.n_heads // self.n_kv_heads
         self.head_dim = head_dim or dim // n_heads
         self.q_dim = self.n_heads * self.head_dim
         self.kv_dim = self.n_kv_heads * self.head_dim
+
+        super().__init__()
 
         self.wq = nn.Linear(dim, self.q_dim, bias=False)
         self.wk = nn.Linear(dim, self.kv_dim, bias=False)
@@ -136,7 +146,7 @@ class Attention(nn.Module):
 
         self.inner_attention = FlexAttentionWrapper()
 
-    def init_weights(self, init_std: float):
+    def init_weights(self, init_std: float) -> None:
         for linear in (self.wq, self.wk, self.wv):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
         nn.init.zeros_(self.wo.weight)
@@ -189,7 +199,7 @@ class Attention(nn.Module):
 
 
 def create_attention_mask(
-    mask_mod,
+    mask_mod: Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
     B: int | None,
     H: int | None,
     Q_LEN: int,

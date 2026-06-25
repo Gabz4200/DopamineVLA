@@ -15,7 +15,7 @@
 # HuggingFace Transformers integration for SigLino
 # Provides PreTrainedModel/PreTrainedConfig wrappers for quantization, device_map, Hub save/load
 
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 from transformers import PretrainedConfig, PreTrainedModel
@@ -70,9 +70,8 @@ class SigLinoConfig(PretrainedConfig):
         teachers: tuple[str, ...] = ("siglip2", "dinov3"),
         teachers_dim: tuple[int, ...] = (1152, 1024),
         use_flex_attn: bool = True,
-        **kwargs,
-    ):
-        hidden_size = kwargs.pop("dim", hidden_size)
+        **kwargs: Any,
+    ) -> None:
         num_hidden_layers = kwargs.pop("n_layers", num_hidden_layers)
         num_attention_heads = kwargs.pop("n_heads", num_attention_heads)
         num_key_value_heads = kwargs.pop("n_kv_heads", num_key_value_heads)
@@ -186,7 +185,7 @@ class SigLinoConfig(PretrainedConfig):
         )
 
     @classmethod
-    def from_hub_config(cls, config_dict: dict) -> "SigLinoConfig":
+    def from_hub_config(cls, config_dict: dict[str, Any]) -> "SigLinoConfig":
         """Create a SigLinoConfig from a hub-style config dict (dim, n_layers, etc.)."""
         mapped = {}
         for hub_name, our_name in _HUB_FIELD_MAP.items():
@@ -198,7 +197,7 @@ class SigLinoConfig(PretrainedConfig):
         return cls(**mapped)
 
     @classmethod
-    def from_siglino_args(cls, args: SigLinoArgs, **kwargs) -> "SigLinoConfig":
+    def from_siglino_args(cls, args: SigLinoArgs, **kwargs: Any) -> "SigLinoConfig":
         """Create a HF config from a SigLinoArgs dataclass."""
         return cls(
             hidden_size=args.dim,
@@ -251,7 +250,7 @@ class SigLinoPreTrainedModel(PreTrainedModel):
         "model.freqs_cis_golden",  # precomputed in _post_init
     ]
 
-    def _init_weights(self, module):
+    def _init_weights(self, module: torch.nn.Module) -> None:
         pass  # Weight init is handled by SigLino.init_weights()
 
 
@@ -262,7 +261,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
     device_map, and Hub save/load support.
     """
 
-    def __init__(self, config: SigLinoConfig):
+    def __init__(self, config: SigLinoConfig) -> None:
         super().__init__(config)
         siglino_args = config.to_siglino_args()
         self.model: SigLino = SigLino(siglino_args)
@@ -274,7 +273,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         pixel_values: torch.Tensor | None = None,
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> dict[str, dict[str, torch.Tensor]]:
         compile_ = kwargs.pop("compile", None)
         return self.model(
@@ -284,11 +283,11 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
             compile=compile_,
         )
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> torch.nn.Module:
         return self.model.img_projector
 
-    def set_input_embeddings(self, value):
-        self.model.img_projector = value
+    def set_input_embeddings(self, value: torch.nn.Module) -> None:
+        self.model.img_projector = value  # pyrefly: ignore[bad-assignment]
 
     def _get_onnx_wrapper(self) -> torch.nn.Module:
         """Return a wrapper with tuple outputs for ONNX export compatibility.
@@ -299,7 +298,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         core = self.model
 
         class ONNXWrapper(torch.nn.Module):
-            def __init__(self, core_model):
+            def __init__(self, core_model: SigLino) -> None:
                 super().__init__()
                 self.core = core_model
 
@@ -325,7 +324,7 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         return ONNXWrapper(core).eval()
 
     @classmethod
-    def export_to_onnx(cls, model_path: str, output_path: str, **onnx_export_kwargs) -> None:
+    def export_to_onnx(cls, model_path: str, output_path: str, **onnx_export_kwargs: Any) -> None:
         """Export the SigLino model to ONNX format.
 
         Args:
