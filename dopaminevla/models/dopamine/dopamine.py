@@ -1,12 +1,10 @@
 import torch
-from huggingface_hub.dataclasses import strict
 from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationConfig
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig, SmolVLMVisionConfig
-from transformers.models.smolvlm.image_processing_pil_smolvlm import SmolVLMImageProcessorPil
 from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
 from transformers.models.smolvlm.modeling_smolvlm import (
     SmolVLMBaseModelOutputWithPast,
@@ -22,8 +20,6 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 logger = logging.get_logger(__name__)
 
 
-@auto_docstring(checkpoint="HuggingFaceTB/SmolVLM2-2.2B-Instruct")  # todo: Make a hub entry for DopamineVLA
-@strict
 class DopamineVLAVisionConfig(SmolVLMVisionConfig):
     r"""
     Example:
@@ -53,8 +49,6 @@ class DopamineVLAVisionTransformer(SmolVLMVisionTransformer):
     pass
 
 
-@auto_docstring(checkpoint="HuggingFaceTB/SmolVLM2-2.2B-Instruct")
-@strict
 class DopamineVLAConfig(SmolVLMConfig):
     r"""
     scale_factor (`int`, *optional*, defaults to 2):
@@ -75,10 +69,6 @@ class DopamineVLAConfig(SmolVLMConfig):
 
 
 class DopamineVLAImageProcessor(SmolVLMImageProcessor):
-    pass
-
-
-class DopamineVLAImageProcessorPil(SmolVLMImageProcessorPil):
     pass
 
 
@@ -318,7 +308,6 @@ __all__ = [
     "DopamineVLAVisionConfig",
     "DopamineVLAConfig",
     "DopamineVLAImageProcessor",
-    "DopamineVLAImageProcessorPil",
     "DopamineVLAForConditionalGeneration",
     "DopamineVLAPreTrainedModel",
     "DopamineVLAModel",
