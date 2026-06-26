@@ -44,7 +44,9 @@ torchao = { index = "pytorch" }
 ggml-python = { index = "ggml" }
 
 [tool.uv]
-environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -62,8 +64,4 @@ target-version = "py313"
 select = ["E", "F", "W", "I"]
 
 [dependency-groups]
-dev = [
-    "lintrunner>=0.13.1",
-    "pyrefly>=1.1.1",
-    "pytest"
-]
+dev = ["lintrunner", "pyrefly", "pytest"]
