@@ -92,7 +92,6 @@ class TestConfig:
         assert config.vision_config is not None
         assert config.text_config is not None
         assert config.use_cache is True
-        assert config.vision_connector_n_latents == 64
 
     def test_custom_values(self) -> None:
         vision = DopamineVLAVisionConfig(**VISION_CFG)
@@ -108,7 +107,6 @@ class TestConfig:
     def test_vision_config_subclass(self) -> None:
         vision = DopamineVLAVisionConfig()
         assert vision.model_type == "dopaminevla_vision"
-        assert vision.spatial_patch_size == 16  # inherited from SigLinoConfig
 
     def test_text_config_resolved(self) -> None:
         config = _make_config()

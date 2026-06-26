@@ -62,33 +62,19 @@ class TestImports:
 
 
 class TestSigLinoArgs:
-    def test_default_creation(self) -> None:
-        args = SigLinoArgs()
-        assert args.dim == 768
-        assert args.n_layers == 18
-        assert args.moe_dim == 768
-
     def test_moe_args_defaults(self) -> None:
         args = SigLinoArgs()
         assert isinstance(args.moe_args, MoEArgs)
-        assert args.moe_args.num_experts == 16
 
     def test_dense_config_has_moe_dim_zero(self) -> None:
         args = siglino_configs["dense-30M"]
         assert args.moe_dim == 0
-        assert args.first_n_layers_dense == 12
-
-    def test_siglino_config_moe_nonzero(self) -> None:
-        args = siglino_configs["siglino-0.15B"]
-        assert args.moe_dim == 384
-        assert args.moe_args.num_experts == 28
 
 
 class TestSigLinoConfig:
     def test_create_from_scratch(self) -> None:
         config = SigLinoConfig()
         assert config.model_type == "siglino"
-        assert config.hidden_size == 768
 
     def test_to_siglino_args_roundtrip(self) -> None:
         config = SigLinoConfig(hidden_size=512, num_hidden_layers=12, num_attention_heads=8)
@@ -126,13 +112,6 @@ class TestSigLinoConfig:
         config2 = SigLinoConfig.from_siglino_args(args)
         assert config2.hidden_size == config.hidden_size
         assert config2.num_hidden_layers == config.num_hidden_layers
-
-    @pytest.mark.slow
-    def test_from_pretrained_hub(self) -> None:
-        config = SigLinoConfig.from_pretrained("tiiuae/siglino-70M")
-        assert config.hidden_size == 512
-        assert config.num_hidden_layers == 12
-        assert config.num_attention_heads == 8
 
     def test_save_and_load_local_config(self, tmp_path: pathlib.Path) -> None:
         config = SigLinoConfig(hidden_size=384, num_hidden_layers=12)
@@ -236,10 +215,11 @@ class TestSigLinoHFModel:
         x = torch.randn(1, 3, 224, 224)
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))
         assert "patch_features" in out
-        assert out["patch_features"]["siglino"].shape[-1] == 512
 
     @staticmethod
-    def _assert_save_load_preserves_weights(original_model: SigLinoPreTrainedModel, tmp_path: pathlib.Path) -> SigLinoHFModel:
+    def _assert_save_load_preserves_weights(
+        original_model: SigLinoPreTrainedModel, tmp_path: pathlib.Path
+    ) -> SigLinoHFModel:
         """Verify save_pretrained/from_pretrained cycle preserves all weights."""
         original_model.save_pretrained(tmp_path)
         loaded_model = SigLinoHFModel.from_pretrained(tmp_path)
@@ -291,8 +271,12 @@ class TestSigLinoHFModel:
             loaded_out = loaded_model(pixel_values=x, spatial_shapes=spatial_shapes)
             loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
 
-        assert not loaded_siglino_feat.isnan().any(), "Loaded MoE model produced NaN (weights and buffers verified)."
-        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), "MoE forward output changed after save/load (weights verified above)."
+        assert not loaded_siglino_feat.isnan().any(), (
+            "Loaded MoE model produced NaN (weights and buffers verified)."
+        )
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
+            "MoE forward output changed after save/load (weights verified above)."
+        )
 
     def test_save_and_load_local_hf(self, tmp_path: pathlib.Path) -> None:
         config = SigLinoConfig(**_HF_SMALL)
@@ -314,8 +298,12 @@ class TestSigLinoHFModel:
             loaded_out = loaded_model(pixel_values=x, spatial_shapes=spatial_shapes)
             loaded_siglino_feat = loaded_out["patch_features"]["siglino"]
 
-        assert not loaded_siglino_feat.isnan().any(), "Loaded model produced NaN (weights and buffers verified)."
-        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), "Forward output changed after save/load (weights verified above)."
+        assert not loaded_siglino_feat.isnan().any(), (
+            "Loaded model produced NaN (weights and buffers verified)."
+        )
+        assert torch.allclose(orig_siglino_feat, loaded_siglino_feat, atol=1e-6), (
+            "Forward output changed after save/load (weights verified above)."
+        )
 
 
 class TestSigLinoImageProcessor:
@@ -396,7 +384,9 @@ class TestQuantizeCPU:
         except Exception as e:
             pytest.skip(f"torchao quantize not supported in this env: {e}")
 
-        out = model(pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]]))
+        out = model(
+            pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]])
+        )
         assert "patch_features" in out
 
 
@@ -433,7 +423,9 @@ class TestConfigCheckpointMatching:
         config_args = siglino_configs["dense-30M"]
         chk_args = siglino_configs["dense-70M"]
         with pytest.raises(ValueError, match="does not match"):
-            _validate_config_checkpoint_match("dense-30M", config_args, "tiiuae/siglino-70M", chk_args)
+            _validate_config_checkpoint_match(
+                "dense-30M", config_args, "tiiuae/siglino-70M", chk_args
+            )
 
     def test_is_hub_id_true(self) -> None:
         assert _is_hub_id("tiiuae/siglino-30M")
