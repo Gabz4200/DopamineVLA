@@ -35,24 +35,25 @@ _HUB_FIELD_MAP = {
 class SigLinoConfig(PretrainedConfig):
     model_type = "siglino"
 
+    ## Defaults match Siglino-70M defaults
     def __init__(
         self,
-        hidden_size: int = 768,
-        num_hidden_layers: int = 18,
-        num_attention_heads: int = 12,
-        head_dim: int | None = 128,
-        num_key_value_heads: int | None = None,
-        moe_dim: int = 768,
-        moe_num_experts: int = 16,
-        moe_num_shared_experts: int = 1,
-        moe_top_k: int = 3,
+        hidden_size: int = 512,
+        num_hidden_layers: int = 12,
+        num_attention_heads: int = 8,
+        head_dim: int | None = 64,
+        num_key_value_heads: int | None = 8,
+        moe_dim: int = 0,
+        moe_num_experts: int = 1,
+        moe_num_shared_experts: int = 0,
+        moe_top_k: int = 1,
         moe_score_before_experts: bool = False,
-        moe_route_norm: bool = True,
-        moe_route_scale: float = 0.8633,
+        moe_route_norm: bool = False,
+        moe_route_scale: float = 1.0,
         moe_score_func: Literal["softmax", "sigmoid"] = "sigmoid",
         moe_activation: Literal["silu", "relu2"] = "silu",
-        first_n_layers_dense: int = 0,
-        ffn_dim: int | None = None,
+        first_n_layers_dense: int = 12,
+        ffn_dim: int | None = 2048,
         activation: str = "silu",
         channel_size: int = 3,
         spatial_patch_size: int = 16,
@@ -65,7 +66,7 @@ class SigLinoConfig(PretrainedConfig):
         norm_eps: float = 1e-5,
         use_qk_norm: bool = True,
         use_tok_norm: bool = True,
-        parameterized_norm: bool = True,
+        parameterized_norm: bool = False,
         n_storage_tokens: int = 4,
         teachers: tuple[str, ...] = ("siglip2", "dinov3"),
         teachers_dim: tuple[int, ...] = (1152, 1024),
@@ -105,7 +106,9 @@ class SigLinoConfig(PretrainedConfig):
                 moe_num_experts = moe_dict.get("num_experts", moe_num_experts)
                 moe_num_shared_experts = moe_dict.get("num_shared_experts", moe_num_shared_experts)
                 moe_top_k = moe_dict.get("top_k", moe_top_k)
-                moe_score_before_experts = moe_dict.get("score_before_experts", moe_score_before_experts)
+                moe_score_before_experts = moe_dict.get(
+                    "score_before_experts", moe_score_before_experts
+                )
                 moe_route_norm = moe_dict.get("route_norm", moe_route_norm)
                 moe_route_scale = moe_dict.get("route_scale", moe_route_scale)
                 moe_score_func = moe_dict.get("score_func", moe_score_func)
@@ -246,6 +249,10 @@ class SigLinoPreTrainedModel(PreTrainedModel):
     main_input_name = "pixel_values"
     supports_gradient_checkpointing = True
     _no_split_modules = ["TransformerBlock", "Attention", "MoE", "FeedForward"]
+    _supports_sdpa = False
+    _supports_flash_attn = False
+    _supports_flex_attn = False
+    _supports_attention_backend = False
     _keys_to_ignore_on_load_missing = [
         "model.freqs_cis",  # non-persistent buffer, recomputed via _post_init
         "model.freqs_cis_golden",  # precomputed in _post_init
