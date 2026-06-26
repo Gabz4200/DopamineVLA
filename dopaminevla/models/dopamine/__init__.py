@@ -12,6 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .dopamine import *
-
-__all__: list[str] = []
+from .dopamine import *  # noqa: F403
