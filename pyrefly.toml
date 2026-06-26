@@ -1,9 +1,64 @@
 project-includes = ["**/*.py", "**/*.pyi", "**/*.ipynb"]
-project-excludes = ["**/build/**", "**/__pycache__/**", "**/*.egg-info/**", "**/.venv/**"]
+project-excludes = [
+    "**/build/**",
+    "**/__pycache__/**",
+    "**/*.egg-info/**",
+    "**/.venv/**",
+    "dopaminevla/models/siglino/build/**",
+]
 
 [errors]
 implicit-import = false
-implicit-any = true
 bad-param-name-override = false
+
+# Relaxed typing constraints
+implicit-any = false
+unannotated-return = false
+unannotated-parameter = false
+
+# PyTorch-specific quality of life
+implicitly-defined-attribute = false
+
+# ── Sub‑configs: enable strict typing for specific source trees ────────────────
+
+[[sub-config]]
+matches = "dopaminevla/models/siglino/siglino/**"
+[sub-config.errors]
+implicit-any = true
 unannotated-return = true
 unannotated-parameter = true
+# Mirror parent relaxed settings for unrelated categories
+bad-param-name-override = false
+implicit-import = false
+implicitly-defined-attribute = false
+
+[[sub-config]]
+matches = "dopaminevla/models/dopamine/**"
+[sub-config.errors]
+implicit-any = true
+unannotated-return = true
+unannotated-parameter = true
+bad-param-name-override = false
+implicit-import = false
+implicitly-defined-attribute = false
+
+[[sub-config]]
+matches = "dopaminevla/models/siglino/pca_maps.py"
+[sub-config.errors]
+implicit-any = true
+unannotated-return = true
+unannotated-parameter = true
+bad-param-name-override = false
+implicit-import = false
+implicitly-defined-attribute = false
+
+[[sub-config]]
+matches = "tests/**"
+[sub-config.errors]
+implicit-any = true
+unannotated-return = true
+unannotated-parameter = true
+bad-param-name-override = false
+implicit-import = false
+implicitly-defined-attribute = false
+
