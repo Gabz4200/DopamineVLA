@@ -11,6 +11,7 @@ from dopaminevla.models.dopamine.dopamine import (
     DopamineVLAForConditionalGeneration,
     DopamineVLAModel,
     DopamineVLAVisionConfig,
+    DopamineVLAVisionTransformer,
 )
 
 # ---------------------------------------------------------------------------
@@ -367,3 +368,164 @@ class TestDopamineVLAForConditionalGeneration:
         )
         # Subsequent iteration: pixel_values should be None (already encoded)
         assert prepared.get("pixel_values") is None
+
+
+# ---------------------------------------------------------------------------
+# Vision Transformer tests
+# ---------------------------------------------------------------------------
+
+
+class TestVisionTransformer:
+    """Direct tests for DopamineVLAVisionTransformer (multi-view encoder)."""
+
+    def test_forward_output_shape(self) -> None:
+        config = _make_config()
+        vt = DopamineVLAVisionTransformer(config.vision_config)
+        vt.eval()
+        x = torch.randn(1, 3, 224, 224)
+        features, masks = vt(x)
+        # Returns (features_tuple, masks_tuple), each with 3 views
+        assert len(features) == 3
+        assert len(masks) == 3
+        for i, (f, m) in enumerate(zip(features, masks, strict=True)):
+            assert f.ndim == 3, f"View {i}: expected (B, L, D), got {f.shape}"
+            assert f.shape[0] == 1
+            assert f.shape[2] == config.vision_config.hidden_size
+            assert m.shape == f.shape[:2], f"Mask {i}: expected {f.shape[:2]}, got {m.shape}"
+
+    def test_forward_no_nan(self) -> None:
+        config = _make_config()
+        vt = DopamineVLAVisionTransformer(config.vision_config)
+        vt.eval()
+        x = torch.randn(1, 3, 224, 224)
+        features, _ = vt(x)
+        for i, v in enumerate(features):
+            assert not v.isnan().any(), f"View {i} has NaN"
+            assert not v.isinf().any(), f"View {i} has Inf"
+
+    def test_pre_process_views_split_dimensions(self) -> None:
+        """Verify that view splitting preserves channels and produces correct spatial sizes."""
+        config = _make_config()
+        vt = DopamineVLAVisionTransformer(config.vision_config)
+        x = torch.randn(1, 3, 128, 256)  # wider than tall
+        pixel_views, mask_views = vt.pre_process_views(x)
+        assert len(pixel_views) == 3
+        assert len(mask_views) == 3
+        # Full view has original size
+        assert pixel_views[0].shape == x.shape
+        # Left crop is narrower than full
+        assert pixel_views[1].shape[-1] < pixel_views[0].shape[-1]
+        assert pixel_views[2].shape[-1] < pixel_views[0].shape[-1]
+        # All views have same batch, channel, height
+        assert pixel_views[1].shape[0] == 1
+        assert pixel_views[1].shape[1] == 3
+        assert pixel_views[1].shape[2] == 128
+
+
+# ---------------------------------------------------------------------------
+# Inputs merger tests
+# ---------------------------------------------------------------------------
+
+
+class TestInputsMerger:
+    """Direct tests for DopamineVLAModel.inputs_merger."""
+
+    def test_basic_merge(self) -> None:
+        config = _make_config()
+        model = DopamineVLAModel(config)
+        model.eval()
+        B, seq_len, n_latents = 1, 12, 8
+        hidden = config.text_config.hidden_size
+        input_ids = torch.tensor([[1] + [IMG_TOKEN_ID] * n_latents + [5, 10, 2]])
+        inputs_embeds = model.get_input_embeddings()(input_ids)
+        image_hidden_states = torch.randn(1, n_latents, hidden)
+        merged = model.inputs_merger(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            image_hidden_states=image_hidden_states,
+        )
+        assert merged.shape == (B, seq_len, hidden)
+        # Image token positions should differ from embedding lookup
+        img_pos = (input_ids == IMG_TOKEN_ID).squeeze()
+        assert not torch.equal(merged[0, img_pos], inputs_embeds[0, img_pos])
+
+    def test_no_image_tokens_passthrough(self) -> None:
+        """When input_ids has no image tokens, merged == inputs_embeds."""
+        config = _make_config()
+        model = DopamineVLAModel(config)
+        model.eval()
+        input_ids = torch.tensor([[1, 5, 10, 2]])
+        inputs_embeds = model.get_input_embeddings()(input_ids)
+        # n_latents=8 but no image tokens in input_ids
+        image_hidden_states = torch.randn(1, 8, config.text_config.hidden_size)
+        merged = model.inputs_merger(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            image_hidden_states=image_hidden_states,
+        )
+        assert merged.shape == inputs_embeds.shape
+        assert torch.equal(merged, inputs_embeds)
+
+    def test_requires_input_ids(self) -> None:
+        config = _make_config()
+        model = DopamineVLAModel(config)
+        model.eval()
+        inputs_embeds = torch.randn(1, 4, config.text_config.hidden_size)
+        img_hidden = torch.randn(1, 8, config.text_config.hidden_size)
+        with pytest.raises(ValueError, match="input_ids is required"):
+            model.inputs_merger(
+                input_ids=None,
+                inputs_embeds=inputs_embeds,
+                image_hidden_states=img_hidden,
+            )
+
+
+# ---------------------------------------------------------------------------
+# get_image_features edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestGetImageFeatures:
+    """Edge cases for DopamineVLAModel.get_image_features."""
+
+    def test_all_zero_images_filtered(self) -> None:
+        """All-zero padding images should be filtered out before the vision encoder."""
+        config = _make_config()
+        model = DopamineVLAModel(config)
+        model.eval()
+        # Batch of 1 with 2 images: one real, one all-zero (padding placeholder)
+        real_img = torch.randn(1, 1, 3, 224, 224)
+        zero_img = torch.zeros(1, 1, 3, 224, 224)
+        pixel_values = torch.cat([real_img, zero_img], dim=1)  # (1, 2, 3, 224, 224)
+        input_ids = torch.tensor([[1] + [IMG_TOKEN_ID] * 8 + [2]])
+        with torch.no_grad():
+            out = model(pixel_values=pixel_values, input_ids=input_ids)
+        # Should not crash — one real image, one zero image filtered
+        assert out.last_hidden_state.shape[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Weight tying
+# ---------------------------------------------------------------------------
+
+
+class TestWeightTying:
+    """Verify lm_head shape matches the embedding table.
+
+    Note: ``_tied_weights_keys`` with dotted paths like ``model.text_model.*``
+    is silently skipped by ``hasattr`` in ``tie_weights`` — this is a known
+    transformers limitation.  Weight tying is thus not active; the output
+    projection and the embedding table remain separate parameters.
+    """
+
+    def test_lm_head_out_features_matches_vocab(self) -> None:
+        config = _make_config()
+        model = DopamineVLAForConditionalGeneration(config)
+        assert model.lm_head.out_features == VOCAB
+        assert model.lm_head.in_features == config.text_config.hidden_size
+
+    def test_get_input_embeddings_returns_module(self) -> None:
+        config = _make_config()
+        model = DopamineVLAForConditionalGeneration(config)
+        emb = model.get_input_embeddings()
+        assert emb.weight.shape == (VOCAB, config.text_config.hidden_size)

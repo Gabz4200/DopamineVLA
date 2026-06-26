@@ -349,12 +349,25 @@ class SigLino(nn.Module):
         return next(self.dinov3_adapter.parameters()).device
 
     def _patchify(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Convert images to patches. Input: (N, C, H, W) or (N, H, W, C)."""
+        """Convert images to patches. Input: (N, C, H, W) or (N, H, W, C).
+
+        If H or W are not divisible by ``patch_size``, the image is
+        zero-padded to the next multiple so no trailing pixels are lost.
+        """
         if images.shape[-1] == 3:  # NHWC format
             images = images.permute(0, 3, 1, 2)  # -> NCHW
 
         N, C, H, W = images.shape
         ph = pw = self.patch_size
+
+        # Pad to patch_size multiple — no cropping, no info loss
+        pad_h = (ph - H % ph) % ph
+        pad_w = (pw - W % pw) % pw
+        if pad_h > 0 or pad_w > 0:
+            images = F.pad(images, (0, pad_w, 0, pad_h))
+            H += pad_h
+            W += pad_w
+
         h, w = H // ph, W // pw
 
         # Create patches
@@ -487,10 +500,36 @@ class SigLino(nn.Module):
 
         # Handle raw images input
         if pixel_values.dim() == 4:
+            # Save pre-padding mask and shapes before _patchify overwrites spatial_shapes
+            _pre_padding_mask = padding_mask
+            _pre_spatial_shapes = spatial_shapes
+
             pixel_values, spatial_shapes = self._patchify(pixel_values)
-            # For raw images, all patches are valid
             N, L, _ = pixel_values.shape
-            padding_mask = torch.ones((N, L), dtype=torch.float32, device=pixel_values.device)
+
+            if _pre_padding_mask is not None and _pre_spatial_shapes is not None:
+                # Pad mask from pre-padding grid to post-padding grid.
+                # Pre-padding mask: (N, H_old*W_old) from _forward_branch
+                # Post-padding spatial_shapes: (N, 2) with [H_new, W_new]
+                h_old, w_old = (
+                    _pre_spatial_shapes[0, 0].item(),
+                    _pre_spatial_shapes[0, 1].item(),
+                )
+                h_new, w_new = (
+                    spatial_shapes[0, 0].item(),
+                    spatial_shapes[0, 1].item(),
+                )
+                old_mask = _pre_padding_mask.view(N, h_old, w_old)  # (N, H_old, W_old)
+                pad_right = w_new - w_old
+                pad_bottom = h_new - h_old
+                if pad_right > 0 or pad_bottom > 0:
+                    padding_mask = F.pad(old_mask, (0, pad_right, 0, pad_bottom), value=0.0)
+                else:
+                    padding_mask = old_mask
+                padding_mask = padding_mask.reshape(N, -1).to(dtype=torch.float32)
+            else:
+                # No input mask — all patches are valid
+                padding_mask = torch.ones((N, L), dtype=torch.float32, device=pixel_values.device)
 
         N, L, _ = pixel_values.shape
         device = pixel_values.device
@@ -550,8 +589,9 @@ class SigLino(nn.Module):
         # Extract features
         cls_feats = h_NSD[:, 0]  # (N, D)
         patch_feats = h_NSD[:, R:]  # (N, L, D) - includes padding positions
+        reg_and_patch_feats = h_NSD[:, 1:]  # (N, R-1+L, D) — registers + patches, no CLS
 
-        # Project to teacher dimensions
+        # Project to teacher dimensions (patches only — teacher distillation)
         student_patch_dinov3 = self.dinov3_adapter(patch_feats)
         student_patch_siglip = self.siglip2_adapter(patch_feats)
         student_cls_dinov3 = self.dinov3_adapter(cls_feats)
@@ -562,15 +602,20 @@ class SigLino(nn.Module):
         siglip_attn_mask = full_mask.reshape(-1)  # Flatten for pooling head
         student_summary_siglip = self.siglip2_multihead_attention_pooling_head(h_sig, siglip_attn_mask)
 
+        # Build mask for registers + patches (used by connector)
+        reg_mask = torch.ones((N, R - 1), dtype=padding_mask.dtype, device=device)
+        connector_mask = torch.cat([reg_mask, padding_mask], dim=1)  # (N, R-1+L)
+
         return {
             "patch_features": {
                 "dinov3": student_patch_dinov3,
                 "siglip2": student_patch_siglip,
-                "siglino": patch_feats,
+                "siglino": reg_and_patch_feats,  # registers + patches for connector
             },
             "summary_features": {
                 "dinov3": student_cls_dinov3,
                 "siglip2": student_summary_siglip,
                 "siglino": cls_feats,
             },
+            "padding_mask": connector_mask,  # (N, R-1+L) float32 — 0 = padding, 1 = valid
         }

@@ -438,3 +438,85 @@ class TestConfigCheckpointMatching:
 
     def test_is_hub_id_false_abs_path(self) -> None:
         assert not _is_hub_id("/absolute/path/to/model.safetensors")
+
+
+class TestSigLinoEdgeCases:
+    """Edge-case tests: non-square images, variable shapes, explicit masks."""
+
+    @staticmethod
+    def _create_model() -> SigLino:
+        args = siglino_configs["dense-30M"]
+        model = SigLino(args)
+        model.init_weights()
+        model.eval()
+        return model
+
+    def test_non_square_image_forward(self) -> None:
+        """Forward with non-square image (taller than wide)."""
+        model = self._create_model()
+        x = torch.randn(1, 3, 288, 192)  # H=288, W=192, both /16
+        out = model(pixel_values=x)
+        feats = out["patch_features"]["siglino"]
+        # 288/16=18, 192/16=12 → 18*12 = 216 patches + 4 registers
+        n_reg = model.n_storage_tokens
+        assert feats.shape[1] == 18 * 12 + n_reg, f"Expected {18*12+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert not feats.isnan().any()
+
+    def test_variable_spatial_shapes_in_batch(self) -> None:
+        """Batched forward where spatial_shapes differ but image sizes match."""
+        model = self._create_model()
+        # All images in a batch must have the same H, W for 4D input.
+        # spatial_shapes overrides the auto-computed shapes for the RoPE grid.
+        x = torch.randn(2, 3, 224, 224)
+        # Both have the same pixel dims but we pass different spatial_shapes
+        shapes = torch.tensor([[14, 14], [7, 28]])  # Same patch count: 196
+        out = model(pixel_values=x, spatial_shapes=shapes)
+        feats = out["patch_features"]["siglino"]
+        assert feats.shape[0] == 2
+        assert not feats.isnan().any()
+
+    def test_forward_with_explicit_padding_mask(self) -> None:
+        """Provide an explicit padding_mask (all valid) — should match auto-generated."""
+        model = self._create_model()
+        x = torch.randn(1, 3, 224, 224)
+        _, _, h, w = x.shape
+        n_patches = (h // 16) * (w // 16)  # 14*14 = 196
+        padding_mask = torch.ones(1, n_patches, dtype=torch.float32)
+        spatial_shapes = torch.tensor([[14, 14]])
+        out = model(pixel_values=x, padding_mask=padding_mask, spatial_shapes=spatial_shapes)
+        feats = out["patch_features"]["siglino"]
+        assert not feats.isnan().any()
+        assert not feats.isinf().any()
+
+    def test_non_divisible_dimensions_padded(self) -> None:
+        """Images with H,W not divisible by patch_size are padded, not cropped.
+
+        Previously ``_patchify`` used ``unfold`` which silently dropped trailing
+        pixels.  Now H/W are padded to the next multiple of 16 before unfolding.
+        The number of output patches must reflect the **padded** dimensions.
+        """
+        model = self._create_model()
+        # H=100, W=100 — neither divisible by 16.  unfold(2,16,16) would cover
+        # only 96 px (6 patches); pixels 96-99 are dropped without padding.
+        # After padding: H=112, W=112 → 7×7 = 49 patches.
+        n_reg = model.n_storage_tokens
+        x = torch.randn(1, 3, 100, 100)
+        out = model(pixel_values=x)
+        feats = out["patch_features"]["siglino"]
+        # 112/16=7 → 7*7=49 patches (not 6*6=36 which would indicate cropping) + registers
+        assert feats.shape[1] == 7 * 7 + n_reg, f"Expected {7*7+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert not feats.isnan().any()
+        assert not feats.isinf().any()
+
+    def test_multiple_non_divisible_batch(self) -> None:
+        """Batch of images with non-divisible dimensions — all padded consistently."""
+        model = self._create_model()
+        n_reg = model.n_storage_tokens
+        # Different padding requirements per dim but same H,W within batch:
+        # H=101, W=99 → pad to 112, 112 → 7*7=49 patches
+        x = torch.randn(2, 3, 101, 99)
+        out = model(pixel_values=x)
+        feats = out["patch_features"]["siglino"]
+        assert feats.shape[0] == 2
+        assert feats.shape[1] == 7 * 7 + n_reg, f"Expected {7*7+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert not feats.isnan().any()

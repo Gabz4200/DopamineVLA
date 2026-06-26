@@ -100,6 +100,8 @@ class DopamineVLAConfig(PretrainedConfig):
             logger.info("text_config is None, defaulting to Llama config")
             text_config = CONFIG_MAPPING["llama"](
                 rms_norm_eps=1e-5,
+                # Standard Llama 3 vocab; pad_token_id must be < vocab_size
+                vocab_size=128_256,
                 pad_token_id=pad_token_id,
             )
 
@@ -248,7 +250,7 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
         self,
         pixel_values: torch.Tensor,
         padding_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         b, _, h, w = pixel_values.shape
 
         out = self.vision_model(
@@ -260,22 +262,34 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
                 device=pixel_values.device,
             ),
         )
-        return out["patch_features"]["siglino"]
+        features = out["patch_features"]["siglino"]
+        mask = out.get("padding_mask")
+        if mask is not None:
+            mask = mask.bool()  # (N, L) float32 -> bool
+        else:
+            N, L = features.shape[:2]
+            mask = torch.ones(N, L, dtype=torch.bool, device=features.device)
+        return features, mask
 
     def forward(
         self,
         pixel_values: torch.Tensor,
         patch_attention_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, ...]:
-        """Returns a tuple of patch-feature tensors, one per view."""
+    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+        """Returns (features_tuple, masks_tuple), one tensor per view.
+
+        Each feature tensor is (B, L_i, hidden_size).
+        Each mask tensor is (B, L_i) bool — True = valid patch.
+        """
         pixel_views, mask_views = self.pre_process_views(
             pixel_values=pixel_values,
             padding_mask=patch_attention_mask,
         )
 
-        return tuple(
-            self._forward_branch(p, m) for p, m in zip(pixel_views, mask_views, strict=True)
-        )
+        results = [self._forward_branch(p, m) for p, m in zip(pixel_views, mask_views, strict=True)]
+        features = tuple(r[0] for r in results)
+        masks = tuple(r[1] for r in results)
+        return features, masks
 
 
 # ---------------------------------------------------------------------------
@@ -619,14 +633,14 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
         patches_subgrid = patches_subgrid.unfold(dimension=2, size=patch_size, step=patch_size)
         patch_attention_mask = (patches_subgrid.sum(dim=(-1, -2)) > 0).bool()
 
-        # Vision model returns tuple of tensors (one per view).
-        view_hidden_states = self.vision_model(
+        # Vision model returns (features_tuple, masks_tuple), one per view.
+        view_hidden_states, view_masks = self.vision_model(
             pixel_values=pixel_values,
             patch_attention_mask=patch_attention_mask,
         )
 
         # Connector fuses views into fixed-length token set.
-        image_features = self.connector(view_hidden_states)
+        image_features = self.connector(view_hidden_states, attention_masks=view_masks)
         return image_features
 
     @can_return_tuple
