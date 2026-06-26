@@ -21,6 +21,7 @@ DopamineVLA bootstrapped from SmolVLM2 (transformers).
 Provides DopamineVLA-prefixed classes mirroring the full SmolVLM2 architecture.
 Each class either inherits from its SmolVLM counterpart (for PreTrainedModel
 subclasses) or is a full standalone copy (for pure nn.Module components).
+I will remove this notice as soon as I actually change the code, but for now this is a copy-paste of SmolVLM2 with DopamineVLA-prefixed classes.
 
 Future customizations: swap vision encoder to SigLino, modify connector, add action head.
 """
@@ -38,7 +39,7 @@ from transformers.masking_utils import create_bidirectional_mask
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.auto import AutoModel
 from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig, SmolVLMVisionConfig
 from transformers.models.smolvlm.image_processing_smolvlm import SmolVLMImageProcessor
@@ -68,7 +69,7 @@ from transformers.utils.output_capturing import capture_outputs
 logger = logging.get_logger(__name__)
 
 
-# ── Module-level helpers (copied from SmolVLM2) ──────────────────────────
+# Module-level helpers (copied from SmolVLM2)
 
 
 def eager_attention_forward(
@@ -94,7 +95,7 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
-# ── Unique dataclasses (not from SmolVLM) ────────────────────────────────
+# Unique dataclasses (not from SmolVLM)
 
 
 @dataclass
@@ -106,7 +107,7 @@ class DopamineVLAVisionData:
     right: torch.Tensor
 
 
-# ── Configuration ────────────────────────────────────────────────────────
+# Configuration
 
 
 class DopamineVLAVisionConfig(SmolVLMVisionConfig):
@@ -121,7 +122,7 @@ class DopamineVLAConfig(SmolVLMConfig):
     model_type = "dopaminevla"
 
 
-# ── Output dataclasses (inherit from SmolVLM counterparts) ───────────────
+# Output dataclasses (inherit from SmolVLM counterparts)
 
 
 class DopamineVLABaseModelOutputWithPast(SmolVLMBaseModelOutputWithPast):
@@ -136,7 +137,7 @@ class DopamineVLACausalLMOutputWithPast(SmolVLMCausalLMOutputWithPast):
     pass
 
 
-# ── Vision subcomponents (inherit from SmolVLM for type compatibility) ──
+# Vision subcomponents (inherit from SmolVLM for type compatibility)
 
 
 class DopamineVLAVisionEmbeddings(SmolVLMVisionEmbeddings):
@@ -152,7 +153,7 @@ class DopamineVLAVisionEmbeddings(SmolVLMVisionEmbeddings):
 class DopamineVLAVisionAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: SmolVLMVisionConfig) -> None:
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -204,7 +205,7 @@ class DopamineVLAVisionAttention(nn.Module):
 
 
 class DopamineVLAVisionMLP(nn.Module):
-    def __init__(self, config: SmolVLMVisionConfig) -> None:
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
         super().__init__()
         self.config = config
         self.activation_fn = ACT2FN[config.hidden_act]
@@ -219,7 +220,7 @@ class DopamineVLAVisionMLP(nn.Module):
 
 
 class DopamineVLAEncoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: SmolVLMVisionConfig) -> None:
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
         super().__init__()
         self.embed_dim = config.hidden_size
         self.self_attn = DopamineVLAVisionAttention(config)
@@ -251,15 +252,15 @@ class DopamineVLAEncoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
-class DopamineVLAEncoder(nn.Module):
+class DopamineVLAEncoder(SmolVLMEncoder):
     """
     Transformer encoder consisting of `config.num_hidden_layers` self attention layers.
     Each layer is a [`DopamineVLAEncoderLayer`].
     """
 
-    def __init__(self, config: SmolVLMVisionConfig) -> None:
-        super().__init__()
-        self.config = config
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
+        nn.Module.__init__(self)
+        self.config = config  # pyrefly: ignore[bad-assignment]  # config is vision config, parent expects SmolVLMConfig
         self.layers = nn.ModuleList([DopamineVLAEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
@@ -281,7 +282,7 @@ class DopamineVLAEncoder(nn.Module):
         return BaseModelOutput(last_hidden_state=cast(torch.FloatTensor, hidden_states))
 
 
-# ── PreTrainedModel base (inherits from SmolVLM counterpart) ──────────────
+# PreTrainedModel base (inherits from SmolVLM counterpart)
 
 
 class DopamineVLAPreTrainedModel(SmolVLMPreTrainedModel):
@@ -296,10 +297,10 @@ class DopamineVLAPreTrainedModel(SmolVLMPreTrainedModel):
     _no_split_modules = ["DopamineVLAVisionAttention", "DopamineVLAEncoderLayer"]
 
 
-# ── Vision Transformer (copies SmolVLMVisionTransformer form with DopamineVLA components) ──
+# Vision Transformer (copies SmolVLMVisionTransformer form with DopamineVLA components)
 
 
-class DopamineVLAVisionTransformer(SmolVLMVisionTransformer):
+class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel, SmolVLMVisionTransformer):
     """
     Vision Transformer for DopamineVLA, inheriting from SmolVLMVisionTransformer.
 
@@ -314,25 +315,25 @@ class DopamineVLAVisionTransformer(SmolVLMVisionTransformer):
         "attentions": DopamineVLAVisionAttention,
     }
 
-    def __init__(self, config: SmolVLMVisionConfig) -> None:
-        # Call PreTrainedModel.__init__ directly — we want our own components,
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
+        # Call DopamineVLAPreTrainedModel.__init__ directly — we want our own components,
         # not SmolVLM's. This avoids creating-and-discarding modules.
-        PreTrainedModel.__init__(self, config)
+        DopamineVLAPreTrainedModel.__init__(self, config)
         embed_dim = config.hidden_size
 
         self.embeddings = DopamineVLAVisionEmbeddings(config)
-        self.encoder = cast(SmolVLMEncoder, DopamineVLAEncoder(config))
+        self.encoder = DopamineVLAEncoder(config)
         self.patch_size = config.patch_size
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
         # post_init() calls init_weights(), initializing all our components.
         self.post_init()
 
-    def get_input_embeddings(self) -> SmolVLMVisionEmbeddings:
-        return self.embeddings
+    def get_input_embeddings(self) -> DopamineVLAVisionEmbeddings:
+        return cast(DopamineVLAVisionEmbeddings, self.embeddings)
 
     def set_input_embeddings(self, value: nn.Module) -> None:
-        self.embeddings = cast(SmolVLMVisionEmbeddings, value)
+        self.embeddings = cast(DopamineVLAVisionEmbeddings, value)
 
     @merge_with_config_defaults
     @capture_outputs(tie_last_hidden_states=False)
@@ -379,7 +380,7 @@ class DopamineVLAVisionTransformer(SmolVLMVisionTransformer):
         )
 
 
-# ── Connector (inherits from SmolVLM counterparts for type compatibility) ──
+# Connector (inherits from SmolVLM counterparts for type compatibility)
 
 
 class DopamineVLASimpleMLP(SmolVLMSimpleMLP):
@@ -406,10 +407,10 @@ class DopamineVLAConnector(SmolVLMConnector):
         self.modality_projection = DopamineVLASimpleMLP(config)
 
 
-# ── Main Model (full code, uses DopamineVLA subcomponents) ────────────────
+# Main Model (full code, uses DopamineVLA subcomponents)
 
 
-class DopamineVLAModel(SmolVLMModel):
+class DopamineVLAModel(DopamineVLAPreTrainedModel, SmolVLMModel):
     """
     DopamineVLA model consisting of a vision encoder and language decoder.
 
@@ -417,10 +418,10 @@ class DopamineVLAModel(SmolVLMModel):
     to SigLino, and the connector can be customized for the action head.
     """
 
-    def __init__(self, config: SmolVLMConfig) -> None:
-        # Call PreTrainedModel.__init__ directly — we want full control over
+    def __init__(self, config: DopamineVLAConfig) -> None:
+        # Call DopamineVLAPreTrainedModel.__init__ directly — we want full control over
         # component creation with our DopamineVLA classes.
-        PreTrainedModel.__init__(self, config)
+        DopamineVLAPreTrainedModel.__init__(self, config)
         self.padding_idx = self.config.text_config.pad_token_id
         self.vocab_size = self.config.text_config.vocab_size
 
@@ -613,10 +614,10 @@ class DopamineVLAModel(SmolVLMModel):
         )
 
 
-# ── Conditional Generation (full code, uses DopamineVLA subcomponents) ────
+# Conditional Generation (full code, uses DopamineVLA subcomponents)
 
 
-class DopamineVLAForConditionalGeneration(SmolVLMForConditionalGeneration):
+class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, SmolVLMForConditionalGeneration):
     """
     DopamineVLA model with a language modeling head.
 
@@ -626,11 +627,11 @@ class DopamineVLAForConditionalGeneration(SmolVLMForConditionalGeneration):
 
     _tied_weights_keys = {"lm_head.weight": "model.text_model.embed_tokens.weight"}
 
-    def __init__(self, config: SmolVLMConfig) -> None:
+    def __init__(self, config: DopamineVLAConfig) -> None:
         # Call SmolVLMPreTrainedModel.__init__ (via its MRO) + GenerationMixin.
         # Skip SmolVLMForConditionalGeneration.__init__ so we can use our own
         # DopamineVLAModel from the start.
-        SmolVLMPreTrainedModel.__init__(self, config)
+        DopamineVLAPreTrainedModel.__init__(self, config)
         self.model = DopamineVLAModel(config)
         self.image_token_id = self.config.image_token_id
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False)
@@ -768,7 +769,7 @@ class DopamineVLAForConditionalGeneration(SmolVLMForConditionalGeneration):
         return model_inputs
 
 
-# ── Image Processor (inherits from SmolVLM counterpart) ───────────────────
+# Image Processor (inherits from SmolVLM counterpart)
 
 
 class DopamineVLAImageProcessor(SmolVLMImageProcessor):
@@ -777,7 +778,7 @@ class DopamineVLAImageProcessor(SmolVLMImageProcessor):
     pass
 
 
-# ── Processor (inherits from SmolVLM counterpart) ─────────────────────────
+# Processor (inherits from SmolVLM counterpart)
 
 
 class DopamineVLAProcessor(SmolVLMProcessor):
@@ -786,7 +787,7 @@ class DopamineVLAProcessor(SmolVLMProcessor):
     pass
 
 
-# ── Public API ────────────────────────────────────────────────────────────
+# Public API
 
 
 __all__ = [
