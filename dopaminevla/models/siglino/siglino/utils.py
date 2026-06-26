@@ -41,7 +41,11 @@ _CONFIG_TO_HUB_ID: dict[str, str] = {
 def _is_hub_id(path: str) -> bool:
     """Check if a path is a HuggingFace Hub model ID (org/name, not a local file)."""
     # Hub IDs have no file extension and match ``org/name`` (no leading slash).
-    return "." not in path and "/" in path and not path.startswith("/") and not os.path.isdir(path) and not os.path.isfile(path)
+    if "." in path or "/" not in path or path.startswith("/"):
+        return False
+    if os.path.isdir(path) or os.path.isfile(path):
+        return False
+    return True
 
 
 def _download_hub_checkpoint(hub_id: str) -> str:
@@ -116,7 +120,10 @@ def _validate_config_checkpoint_match(
             mismatches.append(f"  {key}: config={c_val}, checkpoint={chk_val}")
 
     if mismatches:
-        raise ValueError(f"Config '{config_name}' does not match checkpoint '{checkpoint_path}':\n" + "\n".join(mismatches))
+        raise ValueError(
+            f"Config '{config_name}' does not match checkpoint '{checkpoint_path}':\n"
+            + "\n".join(mismatches)
+        )
 
 
 def load_siglino_model(
@@ -184,10 +191,14 @@ def load_siglino_model(
                     print(f"Auto-detected config: {match}")
                     effective_config = match
                 else:
-                    print(f"Warning: No matching local config for '{effective_ckpt}', using checkpoint metadata directly")
+                    print(
+                        f"Warning: No matching local config for '{effective_ckpt}', using checkpoint metadata directly"
+                    )
                     inferred_args = hub_args
             elif os.path.isfile(effective_ckpt):
-                raise ValueError("Cannot infer config from a local checkpoint file. Please provide --config_name explicitly.")
+                raise ValueError(
+                    "Cannot infer config from a local checkpoint file. Please provide --config_name explicitly."
+                )
 
         # (3) Both given → validate match
         if config_name is not None and checkpoint_path is not None:
@@ -212,7 +223,9 @@ def load_siglino_model(
         if config_name in siglino_configs:
             args = siglino_configs[config_name]
         else:
-            raise ValueError(f"Unknown config: {config_name}. Available: {list(siglino_configs.keys())}")
+            raise ValueError(
+                f"Unknown config: {config_name}. Available: {list(siglino_configs.keys())}"
+            )
     elif inferred_args is not None:
         # No local config matched; use args read from hub metadata directly
         args = inferred_args

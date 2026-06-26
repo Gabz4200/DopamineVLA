@@ -497,14 +497,7 @@ class DopamineVLAConnector(nn.Module):
             lat_mask = torch.ones(B, self.n_latents, dtype=torch.bool, device=context.device)
             full_mask = torch.cat([ctx_mask, lat_mask], dim=1)  # (B, kv_len)
 
-            full_4d = full_mask[:, None, None, :]  # (B, 1, 1, kv_len) broadcast over q_len
-            attn_mask = torch.full(
-                (B, 1, self.n_latents, full_mask.size(1)),
-                float("-inf"),
-                dtype=context.dtype,
-                device=context.device,
-            )
-            attn_mask = attn_mask.masked_fill(full_4d, 0.0)
+            attn_mask = full_mask[:, None, None, :]  # (B, 1, 1, kv_len) bool, broadcasts over q_len
 
         # 3. Expand latents over batch (zero-copy view).
         latents = self.latents.unsqueeze(0).expand(B, -1, -1)  # (B, n_latents, D_vis)
@@ -602,9 +595,9 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
         pixel_values = pixel_values.view(batch_size * num_images, *pixel_values.shape[2:])
 
         # Remove padding images (all-zero tensors).
-        nb_values_per_image = pixel_values.shape[1:].numel()
-        real_images_inds = (pixel_values == 0.0).sum(dim=(-1, -2, -3)) != nb_values_per_image
+        real_images_inds = pixel_values.any(dim=(-1, -2, -3))
 
+        # Ensure at least one image per batch is kept (avoids empty selection).
         real_images_inds[0] |= ~torch.any(real_images_inds)
 
         pixel_values = pixel_values[real_images_inds].contiguous()
@@ -681,11 +674,7 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
             )
             use_cache = False
 
-        if input_ids is not None:
-            batch_size, seq_length = input_ids.shape
-        elif inputs_embeds is not None:
-            batch_size, seq_length, _ = inputs_embeds.shape
-        else:
+        if input_ids is None and inputs_embeds is None:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         if use_cache and past_key_values is None:
@@ -873,17 +862,16 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
         **kwargs: Any,
     ) -> dict[str, Any]:
         # KV-cache: clip input_ids to the last token when past exists.
-        if past_key_values is not None and len(past_key_values) > 0:
-            if input_ids is not None:
-                past_length = past_key_values.get_seq_length()
-                if cache_position is not None:
-                    cache_position = cache_position[-1:]
-                    if input_ids.shape[1] > 1:
-                        input_ids = input_ids[:, -1:]
-                elif past_length < input_ids.shape[1]:
-                    input_ids = input_ids[:, past_length:]
-                else:
+        if past_key_values is not None and len(past_key_values) > 0 and input_ids is not None:
+            past_length = past_key_values.get_seq_length()
+            if cache_position is not None:
+                cache_position = cache_position[-1:]
+                if input_ids.shape[1] > 1:
                     input_ids = input_ids[:, -1:]
+            elif past_length < input_ids.shape[1]:
+                input_ids = input_ids[:, past_length:]
+            else:
+                input_ids = input_ids[:, -1:]
 
             if attention_mask is not None and cache_position is not None:
                 attention_mask = attention_mask[:, -cache_position.shape[0] - 1 :]
