@@ -286,14 +286,16 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         pixel_values: torch.Tensor | None = None,
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
+        output_hidden_states: bool = False,
         **kwargs: object,
-    ) -> dict[str, dict[str, torch.Tensor]]:
+    ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor | tuple[torch.Tensor, ...] | None]:
         compile_ = kwargs.pop("compile", None)
         return self.model(
             pixel_values=pixel_values,
             padding_mask=padding_mask,
             spatial_shapes=spatial_shapes,
             compile=compile_,
+            output_hidden_states=output_hidden_states,
         )
 
     def get_input_embeddings(self) -> torch.nn.Module:

@@ -474,7 +474,8 @@ class SigLino(nn.Module):
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
         compile: bool | None = None,
-    ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor]:
+        output_hidden_states: bool = False,
+    ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor | tuple[torch.Tensor, ...] | None]:
         """
         Forward pass for vision encoding.
 
@@ -572,7 +573,8 @@ class SigLino(nn.Module):
             self.freqs_cis_golden.to(dtype=pos_thw.dtype), pos_thw[:, :, 1:]
         )
 
-        # Transformer layers
+        # Transformer layers — collect intermediate hidden states when requested
+        all_hidden_states = [] if output_hidden_states else None
         for layer in self.layers.values():
             h_NSD = layer(
                 h_NSD,
@@ -582,8 +584,18 @@ class SigLino(nn.Module):
                 attention_masks=block_mask,
                 compile=compile,
             )
+            if all_hidden_states is not None:
+                all_hidden_states.append(h_NSD)
 
         h_NSD = self.norm(h_NSD)
+
+        # Initialize unconditionally so the return below is always valid
+        hidden_states_out: tuple[torch.Tensor, ...] | None = None
+        if all_hidden_states is not None:
+            # Apply final norm to intermediate states so they live in the same
+            # representational space as the final output, then replace the last
+            # entry with the already-normed final h_NSD to avoid double-norm.
+            hidden_states_out = tuple(self.norm(hs) for hs in all_hidden_states[:-1]) + (h_NSD,)
 
         # Extract features
         cls_feats = h_NSD[:, 0]  # (N, D)
@@ -619,4 +631,5 @@ class SigLino(nn.Module):
                 "siglino": cls_feats,
             },
             "padding_mask": connector_mask,  # (N, R-1+L) float32 — 0 = padding, 1 = valid
+            "hidden_states": hidden_states_out if output_hidden_states else None,
         }
