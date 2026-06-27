@@ -5,12 +5,15 @@ generation with real image inputs. Output will be random — this is
 infrastructure preparation for when weights become available.
 """
 
+from typing import cast
+
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TVF
 from PIL import Image
 from transformers import AutoTokenizer
 from transformers.image_utils import load_image
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from dopaminevla.models.dopamine import (
     DopamineVLAConfig,
@@ -78,14 +81,14 @@ print(f"  pixel_values: {tuple(pixel_values.shape)}")
 # ---------------------------------------------------------------------------
 
 print("Loading tokenizer...")
-tokenizer = AutoTokenizer.from_pretrained("Xenova/llama2-tokenizer")
+tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained("Xenova/llama2-tokenizer"))
 if tokenizer.pad_token_id is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 # Add image token so image_token_id is within the embedding table
 image_token = "<image>"
 tokenizer.add_tokens([image_token], special_tokens=True)
-image_token_id = tokenizer.convert_tokens_to_ids(image_token)
+image_token_id = cast(int, tokenizer.convert_tokens_to_ids(image_token))
 print(f"  image_token_id: {image_token_id}")
 print(f"  vocab_size: {len(tokenizer)}")
 
@@ -159,6 +162,8 @@ with torch.inference_mode():
         use_cache=True,
     )
 
-generated_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)
+generated_text = tokenizer.batch_decode(
+    cast(torch.Tensor, generated_ids), skip_special_tokens=False
+)
 print(f"\nGenerated token IDs:\n  {generated_ids[0].tolist()}")
 print(f"\nDecoded:\n  {generated_text[0]}")

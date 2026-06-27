@@ -1,5 +1,7 @@
 """Tests for DopamineVLA — no SmolVLM dependencies, fully self-contained."""
 
+from typing import Any, cast
+
 import pytest
 import torch
 
@@ -42,7 +44,7 @@ VISION_CFG = dict(
 )
 
 
-def _make_config(**overrides: object) -> DopamineVLAConfig:
+def _make_config(**overrides: Any) -> DopamineVLAConfig:
     # Separate vision-field overrides (SigLinoConfig parameters)
     vis_fields = {
         "hidden_size",
@@ -55,7 +57,7 @@ def _make_config(**overrides: object) -> DopamineVLAConfig:
         "max_seq_len",
     }
     vis_kw = {k: overrides.pop(k) for k in list(overrides) if k in vis_fields}
-    vision_config = DopamineVLAVisionConfig(**{**VISION_CFG, **vis_kw})
+    vision_config = DopamineVLAVisionConfig(**cast(dict[str, Any], {**VISION_CFG, **vis_kw}))
 
     # Separate text-field overrides
     text_fields = {
@@ -142,6 +144,7 @@ class TestOutputs:
         out = DopamineVLABaseModelOutputWithPast(
             last_hidden_state=torch.randn(1, 10, 256),
         )
+        assert out.last_hidden_state is not None
         assert out.last_hidden_state.shape == (1, 10, 256)
         assert out.past_key_values is None
         assert out.image_hidden_states is None
@@ -152,6 +155,7 @@ class TestOutputs:
             logits=torch.randn(1, 10, 32000),
         )
         assert out.loss is not None
+        assert out.logits is not None
         assert out.logits.shape == (1, 10, VOCAB)
         assert out.past_key_values is None
 
@@ -315,6 +319,7 @@ class TestDopamineVLAForConditionalGeneration:
                 labels=labels,
             )
         assert out.loss is not None
+        assert out.logits is not None
         assert out.logits.shape == (1, 10, VOCAB)
 
     def test_get_image_features_delegates(self) -> None:
@@ -380,6 +385,7 @@ class TestVisionTransformer:
 
     def test_forward_output_shape(self) -> None:
         config = _make_config()
+        assert isinstance(config.vision_config, DopamineVLAVisionConfig)
         vt = DopamineVLAVisionTransformer(config.vision_config)
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
@@ -395,6 +401,7 @@ class TestVisionTransformer:
 
     def test_forward_no_nan(self) -> None:
         config = _make_config()
+        assert isinstance(config.vision_config, DopamineVLAVisionConfig)
         vt = DopamineVLAVisionTransformer(config.vision_config)
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
@@ -406,6 +413,7 @@ class TestVisionTransformer:
     def test_pre_process_views_split_dimensions(self) -> None:
         """Verify that view splitting preserves channels and produces correct spatial sizes."""
         config = _make_config()
+        assert isinstance(config.vision_config, DopamineVLAVisionConfig)
         vt = DopamineVLAVisionTransformer(config.vision_config)
         x = torch.randn(1, 3, 128, 256)  # wider than tall
         pixel_views, mask_views = vt.pre_process_views(x)

@@ -106,8 +106,8 @@ class DopamineVLAConfig(PretrainedConfig):
             )
 
         # Store resolved configs as instance attributes
-        self.vision_config = vision_config
-        self.text_config = text_config
+        self.vision_config: DopamineVLAVisionConfig | PretrainedConfig = vision_config
+        self.text_config: PretrainedConfig = text_config
 
         # Connector params (used by DopamineVLAConnector)
         self.vision_connector_n_latents = vision_connector_n_latents
@@ -187,29 +187,26 @@ class DopamineVLAPreTrainedModel(PreTrainedModel):
 
 
 # ---------------------------------------------------------------------------
-# Vision Transformer — wrapper around SigLinoHFModel
+# Multi-View Crop
 # ---------------------------------------------------------------------------
 
 
-class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
-    """Multi-view vision encoder wrapping SigLinoHFModel.
+class DopamineVLAMultiViewCrop(nn.Module):
+    """Splits an image into three overlapping views: full, left crop, right crop.
 
-    Takes an image and produces three overlapping views (full, left crop, right
-    crop), forward each through SigLino, and returns a tuple of patch-feature
-    tensors — one per view — for the Perceiver connector to fuse.
+    The crop boundaries are computed from patch-aligned coordinates so each
+    view aligns with the vision encoder's patch grid.
     """
 
-    def __init__(self, config: DopamineVLAVisionConfig) -> None:
-        super().__init__(config)
-        self.vision_model = SigLinoHFModel(config)
-        self.patch_size = config.spatial_patch_size
-        self.post_init()
+    def __init__(self, patch_size: int, overlap_pixels: int = 32) -> None:
+        super().__init__()
+        self.patch_size = patch_size
+        self.overlap_pixels = overlap_pixels
 
-    def pre_process_views(
+    def forward(
         self,
         pixel_values: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
-        overlap_pixels: int = 32,
     ) -> tuple[
         tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -225,7 +222,7 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
 
         w_patches = padding_mask.size(-1)
         patch_mid = w_patches // 2
-        patch_overlap = min(overlap_pixels // self.patch_size, patch_mid)
+        patch_overlap = min(self.overlap_pixels // self.patch_size, patch_mid)
 
         left_patch_end = patch_mid + patch_overlap
         right_patch_start = patch_mid - patch_overlap
@@ -245,6 +242,38 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
                 padding_mask[..., right_patch_start:],
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Vision Transformer — wrapper around SigLinoHFModel
+# ---------------------------------------------------------------------------
+
+
+class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
+    """Multi-view vision encoder wrapping SigLinoHFModel.
+
+    Takes an image and produces three overlapping views (full, left crop, right
+    crop), forward each through SigLino, and returns a tuple of patch-feature
+    tensors — one per view — for the Perceiver connector to fuse.
+    """
+
+    def __init__(self, config: DopamineVLAVisionConfig) -> None:
+        super().__init__(config)
+        self.vision_model = SigLinoHFModel(config)
+        self.patch_size = config.spatial_patch_size
+        self.crop = DopamineVLAMultiViewCrop(self.patch_size)
+        self.post_init()
+
+    def pre_process_views(
+        self,
+        pixel_values: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        overlap_pixels: int = 32,
+    ) -> tuple[
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
+        return self.crop(pixel_values, padding_mask=padding_mask)
 
     def _forward_branch(
         self,
@@ -281,7 +310,7 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
         Each feature tensor is (B, L_i, hidden_size).
         Each mask tensor is (B, L_i) bool — True = valid patch.
         """
-        pixel_views, mask_views = self.pre_process_views(
+        pixel_views, mask_views = self.crop(
             pixel_values=pixel_values,
             padding_mask=patch_attention_mask,
         )
@@ -501,50 +530,33 @@ class DopamineVLAConnector(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Core Model
+# Inputs Merger
 # ---------------------------------------------------------------------------
 
 
-class DopamineVLAModel(DopamineVLAPreTrainedModel):
-    """DopamineVLA model: vision encoder + connector + text decoder."""
+class DopamineVLAInputsMerger(nn.Module):
+    """Merges image hidden states into the token-embedding sequence at image-token positions.
 
-    def __init__(self, config: DopamineVLAConfig) -> None:
-        super().__init__(config)
-        self.padding_idx = self.config.text_config.pad_token_id
-        self.vocab_size = self.config.text_config.vocab_size
+    ``image_hidden_states`` has shape ``(N_images, n_latents, text_hidden_size)``,
+    where ``n_latents`` is the Perceiver's fixed token budget per image.
+    """
 
-        self.vision_model: DopamineVLAVisionTransformer = DopamineVLAVisionTransformer._from_config(
-            config.vision_config
-        )
-        self.connector = DopamineVLAConnector(config)
-        self.text_model = AutoModel.from_config(config.text_config)
+    def __init__(self, image_token_id: int) -> None:
+        super().__init__()
+        self.image_token_id = image_token_id
 
-        self.image_token_id = self.config.image_token_id
-        self.post_init()
-
-    def get_input_embeddings(self) -> nn.Module:
-        return self.text_model.get_input_embeddings()
-
-    def set_input_embeddings(self, value: nn.Module) -> None:
-        self.text_model.set_input_embeddings(value)
-
-    def inputs_merger(
+    def forward(
         self,
         input_ids: torch.Tensor | None,
         inputs_embeds: torch.Tensor,
         image_hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        """Merge image hidden states into the token-embedding sequence.
-
-        ``image_hidden_states`` has shape ``(N_images, n_latents, text_hidden_size)``,
-        where ``n_latents`` is the Perceiver's fixed token budget per image.
-        """
         if input_ids is None:
             raise ValueError("input_ids is required for image token merging")
 
         _, patch_size, _ = image_hidden_states.shape
 
-        image_mask = input_ids == self.config.image_token_id
+        image_mask = input_ids == self.image_token_id
 
         num_image_tokens = image_mask.sum(dim=1)
         torch_compilable_check(
@@ -567,6 +579,45 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
 
         merged_embeds = torch.where(image_mask.unsqueeze(-1), image_embeds, inputs_embeds)
         return merged_embeds
+
+
+# ---------------------------------------------------------------------------
+# Core Model
+# ---------------------------------------------------------------------------
+
+
+class DopamineVLAModel(DopamineVLAPreTrainedModel):
+    """DopamineVLA model: vision encoder + connector + text decoder."""
+
+    def __init__(self, config: DopamineVLAConfig) -> None:
+        super().__init__(config)
+        self.padding_idx = self.config.text_config.pad_token_id
+        self.vocab_size = self.config.text_config.vocab_size
+
+        self.vision_model: DopamineVLAVisionTransformer = DopamineVLAVisionTransformer._from_config(
+            config.vision_config
+        )
+        self.connector = DopamineVLAConnector(config)
+        self.text_model = AutoModel.from_config(config.text_config)
+
+        self.image_token_id = self.config.image_token_id
+        self.inputs_merger_module = DopamineVLAInputsMerger(self.image_token_id)
+        self.post_init()
+
+    def get_input_embeddings(self) -> nn.Module:
+        return self.text_model.get_input_embeddings()
+
+    def set_input_embeddings(self, value: nn.Module) -> None:
+        self.text_model.set_input_embeddings(value)
+
+    def inputs_merger(
+        self,
+        input_ids: torch.Tensor | None,
+        inputs_embeds: torch.Tensor,
+        image_hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        """Merge image hidden states into the token-embedding sequence."""
+        return self.inputs_merger_module(input_ids, inputs_embeds, image_hidden_states)
 
     @can_return_tuple
     def get_image_features(
@@ -898,9 +949,11 @@ __all__ = [
     "DopamineVLAVisionConfig",
     "DopamineVLAConfig",
     "DopamineVLAPreTrainedModel",
+    "DopamineVLAMultiViewCrop",
     "DopamineVLAVisionTransformer",
     "DopamineVLABaseModelOutputWithPast",
     "DopamineVLACausalLMOutputWithPast",
+    "DopamineVLAInputsMerger",
     "DopamineVLAConnector",
     "DopamineVLAModel",
     "DopamineVLAForConditionalGeneration",

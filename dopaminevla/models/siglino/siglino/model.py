@@ -482,7 +482,7 @@ class SigLino(nn.Module):
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
         compile: bool | None = None,
-    ) -> dict[str, dict[str, torch.Tensor]]:
+    ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor]:
         """
         Forward pass for vision encoding.
 
@@ -522,9 +522,9 @@ class SigLino(nn.Module):
                     spatial_shapes[0, 0].item(),
                     spatial_shapes[0, 1].item(),
                 )
-                old_mask = _pre_padding_mask.view(N, h_old, w_old)  # (N, H_old, W_old)
-                pad_right = w_new - w_old
-                pad_bottom = h_new - h_old
+                old_mask = _pre_padding_mask.view(N, int(h_old), int(w_old))  # (N, H_old, W_old)
+                pad_right = int(w_new - w_old)
+                pad_bottom = int(h_new - h_old)
                 if pad_right > 0 or pad_bottom > 0:
                     padding_mask = F.pad(old_mask, (0, pad_right, 0, pad_bottom), value=0.0)
                 else:
