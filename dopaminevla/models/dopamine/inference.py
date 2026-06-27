@@ -5,9 +5,9 @@ generation with real image inputs. Output will be random — this is
 infrastructure preparation for when weights become available.
 """
 
-import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TVF
 from PIL import Image
 from transformers import AutoTokenizer
 from transformers.image_utils import load_image
@@ -42,12 +42,8 @@ def preprocess_image(image: Image.Image) -> torch.Tensor:
     )
     image = image.resize((new_w, new_h), Image.Resampling.BICUBIC)
 
-    arr = np.array(image).astype(np.float32) / 255.0
-    mean = np.array(IMAGE_MEAN, dtype=np.float32)
-    std = np.array(IMAGE_STD, dtype=np.float32)
-    arr = (arr - mean) / std
-
-    return torch.from_numpy(arr).permute(2, 0, 1).contiguous()  # (3, H, W)
+    tensor = TVF.to_tensor(image)  # (3, H, W), float32, [0, 1]
+    return TVF.normalize(tensor, mean=IMAGE_MEAN, std=IMAGE_STD)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +149,7 @@ print(f"  image_token count: {image_token_count}  (expected: {2 * n_latents})")
 # ---------------------------------------------------------------------------
 
 print("\nGenerating (random weights — output is garbage)...")
-with torch.no_grad():
+with torch.inference_mode():
     generated_ids = model.generate(
         input_ids=input_ids,
         attention_mask=attention_mask,

@@ -297,21 +297,6 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
 # ---------------------------------------------------------------------------
 
 
-class DopamineVLARMSNorm(nn.Module):
-    """RMSNorm — identical to Idefics2RMSNorm, isolated so we own it."""
-
-    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dtype = x.dtype
-        x = x.float()
-        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon)
-        return self.weight * x.to(dtype)
-
-
 class DopamineVLAPerceiverAttention(nn.Module):
     """
     Cross-attention block: learnable latents (queries) attend to the
@@ -339,13 +324,6 @@ class DopamineVLAPerceiverAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, self.n_kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(n_heads * head_dim, hidden_size, bias=False)
 
-    @staticmethod
-    def _repeat_kv(t: torch.Tensor, n_rep: int) -> torch.Tensor:
-        if n_rep == 1:
-            return t
-        B, H, L, D = t.shape
-        return t[:, :, None, :, :].expand(B, H, n_rep, L, D).reshape(B, H * n_rep, L, D)
-
     def forward(
         self,
         latents: torch.Tensor,  # (B, n_latents, hidden_size)
@@ -365,9 +343,6 @@ class DopamineVLAPerceiverAttention(nn.Module):
         k = k.view(B, kv_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, kv_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
 
-        k = self._repeat_kv(k, self.n_kv_groups)
-        v = self._repeat_kv(v, self.n_kv_groups)
-
         attn_out = F.scaled_dot_product_attention(
             q,
             k,
@@ -375,6 +350,7 @@ class DopamineVLAPerceiverAttention(nn.Module):
             attn_mask=attention_mask,
             dropout_p=self.attn_dropout if self.training else 0.0,
             scale=self.scale,
+            enable_gqa=True,
         )
 
         attn_out = attn_out.transpose(1, 2).reshape(B, q_len, self.n_heads * self.head_dim)
@@ -395,12 +371,12 @@ class DopamineVLAPerceiverLayer(nn.Module):
         rms_eps: float = 1e-6,
     ) -> None:
         super().__init__()
-        self.latents_norm = DopamineVLARMSNorm(hidden_size, eps=rms_eps)
-        self.context_norm = DopamineVLARMSNorm(hidden_size, eps=rms_eps)
+        self.latents_norm = nn.RMSNorm(hidden_size, eps=rms_eps)
+        self.context_norm = nn.RMSNorm(hidden_size, eps=rms_eps)
         self.cross_attn = DopamineVLAPerceiverAttention(
             hidden_size, n_heads, head_dim, n_kv_heads, attn_dropout
         )
-        self.post_attn_norm = DopamineVLARMSNorm(hidden_size, eps=rms_eps)
+        self.post_attn_norm = nn.RMSNorm(hidden_size, eps=rms_eps)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * ffn_mult, bias=False),
             nn.GELU(),
@@ -468,7 +444,7 @@ class DopamineVLAConnector(nn.Module):
             ]
         )
 
-        self.norm = DopamineVLARMSNorm(vision_hidden_size, eps=rms_eps)
+        self.norm = nn.RMSNorm(vision_hidden_size, eps=rms_eps)
         self.modality_projection = nn.Linear(vision_hidden_size, text_hidden_size, bias=False)
 
     def forward(

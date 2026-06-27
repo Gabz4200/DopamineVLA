@@ -50,15 +50,10 @@ class SigLinoFeatures:
     grid_hw: tuple[int, int]
 
 
-class PytorchGELUTanh(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.gelu(x, approximate="tanh")
-
-
 class Siglip2MLP(nn.Module):
     def __init__(self, hidden_size: int, intermediate_size: int) -> None:
         super().__init__()
-        self.activation_fn = PytorchGELUTanh()
+        self.activation_fn = nn.GELU(approximate="tanh")
         self.fc1 = nn.Linear(hidden_size, intermediate_size)
         self.fc2 = nn.Linear(intermediate_size, hidden_size)
 
@@ -67,14 +62,6 @@ class Siglip2MLP(nn.Module):
         hidden_states = self.activation_fn(hidden_states)
         hidden_states = self.fc2(hidden_states)
         return hidden_states
-
-
-def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: int | None = None) -> torch.Tensor:
-    bsz, src_len = mask.size()
-    tgt_len = tgt_len if tgt_len is not None else src_len
-    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
-    inverted_mask = torch.tensor(1.0, dtype=dtype) - expanded_mask
-    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
 class Siglip2MultiheadAttentionPoolingHead(nn.Module):
@@ -86,20 +73,23 @@ class Siglip2MultiheadAttentionPoolingHead(nn.Module):
         self.attention = nn.MultiheadAttention(hidden_size, num_attention_heads, batch_first=True)
         self.layernorm = nn.LayerNorm(hidden_size, eps=1e-5)
         self.mlp = Siglip2MLP(hidden_size, 4304)
-        self.num_heads = num_attention_heads
 
-    def forward(self, hidden_state: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, hidden_state: torch.Tensor, attention_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         batch_size = hidden_state.shape[0]
         probe = self.probe.repeat(batch_size, 1, 1)
 
+        # key_padding_mask: True = padding (masked out). attention_mask: True = valid.
         if attention_mask is not None:
-            attention_mask = E.rearrange(attention_mask, "(b s) -> b s", b=batch_size)
-            target_len, source_len = probe.shape[1], hidden_state.shape[1]
-            attention_mask = _expand_mask(attention_mask, hidden_state.dtype, target_len)
-            attention_mask = attention_mask.repeat(1, self.num_heads, target_len, 1)
-            attention_mask = attention_mask.reshape(-1, target_len, source_len)
+            attn = E.rearrange(attention_mask, "(b s) -> b s", b=batch_size)
+            key_padding_mask = ~attn.bool()
+        else:
+            key_padding_mask = None
 
-        hidden_state = self.attention(probe, hidden_state, hidden_state, attn_mask=attention_mask)[0]
+        hidden_state = self.attention(
+            probe, hidden_state, hidden_state, key_padding_mask=key_padding_mask
+        )[0]
         residual = hidden_state
         hidden_state = self.layernorm(hidden_state)
         hidden_state = residual + self.mlp(hidden_state)
@@ -258,7 +248,9 @@ class SigLino(nn.Module):
         self.dinov3_adapter = Adapter(args.dim, dinov3_dim, bias=False)
         self.siglip2_adapter = Adapter(args.dim, siglip2_dim, bias=False)
         self.layer_norm_dinov3 = nn.LayerNorm(dinov3_dim)
-        self.siglip2_multihead_attention_pooling_head = Siglip2MultiheadAttentionPoolingHead(siglip2_dim, 16, siglip2_dim)
+        self.siglip2_multihead_attention_pooling_head = Siglip2MultiheadAttentionPoolingHead(
+            siglip2_dim, 16, siglip2_dim
+        )
 
         # Freeze teacher-specific components
         for param in self.layer_norm_dinov3.parameters():
@@ -283,8 +275,11 @@ class SigLino(nn.Module):
         self.freqs_cis = self._precompute_freqs_cis(d, self.args)
 
     def _precompute_golden_freqs_cis(self, head_dim: int, args: SigLinoArgs) -> torch.Tensor:
-        return precompute_golden_freqs_cis(args.n_heads, head_dim, args.rope_min_freqs, args.rope_max_freqs)
+        return precompute_golden_freqs_cis(
+            args.n_heads, head_dim, args.rope_min_freqs, args.rope_max_freqs
+        )
 
+    @torch.compiler.disable()
     def _apply(self, fn: Callable[[torch.Tensor], torch.Tensor], recurse: bool = True) -> Self:
         # Workaround to prevent casting complex RoPE buffers to real dtypes
         # (which triggers a warning and discards the imaginary part).
@@ -333,7 +328,9 @@ class SigLino(nn.Module):
             nn.init.normal_(self.storage_tokens, std=0.02)
 
         for layer in self.layers.values():
-            assert isinstance(layer, TransformerBlock)  # Makes pyrefly happy and it doesnt yell at me
+            assert isinstance(
+                layer, TransformerBlock
+            )  # Makes pyrefly happy and it doesnt yell at me
             layer.init_weights(buffer_device=buffer_device)
 
         self.norm.reset_parameters()
@@ -410,10 +407,14 @@ class SigLino(nn.Module):
             valid_kv = full_mask.unsqueeze(-2)
             mask_matrix = valid_q & valid_kv
 
-            def mask_mod(b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor) -> torch.Tensor:
+            def mask_mod(
+                b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
+            ) -> torch.Tensor:
                 return mask_matrix[b, q_idx, kv_idx]
 
-            block_mask = create_attention_mask(mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size))
+            block_mask = create_attention_mask(
+                mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size)
+            )
             self._cached_block_mask = block_mask
             self._cached_mask_key = mask_key
             return block_mask
@@ -471,7 +472,9 @@ class SigLino(nn.Module):
         hpos[:, R:] = torch.where(valid_mask, h_norm, float("nan"))
         wpos[:, R:] = torch.where(valid_mask, w_norm, float("nan"))
 
-        return torch.stack([tpos, hpos, wpos], dim=0)  # (3, N, S) — rearranged to (N, S, 3) in forward
+        return torch.stack(
+            [tpos, hpos, wpos], dim=0
+        )  # (3, N, S) — rearranged to (N, S, 3) in forward
 
     def forward(
         self,
@@ -569,9 +572,13 @@ class SigLino(nn.Module):
         # Also mark padding positions as NaN
         patch_mask_2d = torch.zeros((N, S), dtype=torch.bool, device=device)
         patch_mask_2d[:, R:] = padding_mask.bool()  # Only valid patches get 2D RoPE
-        pos_thw[:, :, 1:] = pos_thw[:, :, 1:].masked_fill(~patch_mask_2d.unsqueeze(-1), float("nan"))
+        pos_thw[:, :, 1:] = pos_thw[:, :, 1:].masked_fill(
+            ~patch_mask_2d.unsqueeze(-1), float("nan")
+        )
 
-        freqs_cis_golden = apply_golden_freqs_cis_to_visual_pos(self.freqs_cis_golden.to(dtype=pos_thw.dtype), pos_thw[:, :, 1:])
+        freqs_cis_golden = apply_golden_freqs_cis_to_visual_pos(
+            self.freqs_cis_golden.to(dtype=pos_thw.dtype), pos_thw[:, :, 1:]
+        )
 
         # Transformer layers
         for layer in self.layers.values():
@@ -600,7 +607,9 @@ class SigLino(nn.Module):
         h_sig = self.siglip2_adapter(h_NSD)
         # Pass the full mask for attention pooling
         siglip_attn_mask = full_mask.reshape(-1)  # Flatten for pooling head
-        student_summary_siglip = self.siglip2_multihead_attention_pooling_head(h_sig, siglip_attn_mask)
+        student_summary_siglip = self.siglip2_multihead_attention_pooling_head(
+            h_sig, siglip_attn_mask
+        )
 
         # Build mask for registers + patches (used by connector)
         reg_mask = torch.ones((N, R - 1), dtype=padding_mask.dtype, device=device)

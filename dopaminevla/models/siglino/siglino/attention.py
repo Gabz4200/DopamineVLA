@@ -24,7 +24,12 @@ import einops as E
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch.nn.attention.flex_attention import AuxRequest, BlockMask, create_block_mask, flex_attention
+from torch.nn.attention.flex_attention import (
+    AuxRequest,
+    BlockMask,
+    create_block_mask,
+    flex_attention,
+)
 from torch.torch_version import TorchVersion
 
 from .rope import apply_3d_rotary_emb
@@ -35,7 +40,11 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
         return x
-    return x.unsqueeze(3).expand(bs, slen, n_kv_heads, n_rep, head_dim).reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    return (
+        x.unsqueeze(3)
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    )
 
 
 def device_supports_flex_attention(device: torch.device) -> bool:
@@ -173,26 +182,40 @@ class Attention(nn.Module):
             xq = F.rms_norm(xq, (xq.size(-1),))
             xk = F.rms_norm(xk, (xk.size(-1),))
 
-        xk = repeat_kv(xk, self.n_rep)
-        xv = repeat_kv(xv, self.n_rep)
-
-        xq, xk = apply_3d_rotary_emb(xq, xk, freqs_cis, freqs_cis_2d, pos_thw)
-
-        xq = xq.transpose(1, 2)
-        xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
-
         use_flex = self.use_flex_attn and isinstance(attention_masks, BlockMask)
 
+        # RoPE is element-wise on head_dim — apply before GQA expansion
+        xq, xk = apply_3d_rotary_emb(xq, xk, freqs_cis, freqs_cis_2d, pos_thw)
+
         if use_flex:
-            output, aux = self.inner_attention(xq, xk, xv, block_mask=attention_masks, compile=compile, return_aux=True)
+            # FlexAttention needs all heads explicit
+            xk = repeat_kv(xk, self.n_rep)
+            xv = repeat_kv(xv, self.n_rep)
+            xq = xq.transpose(1, 2)
+            xk = xk.transpose(1, 2)
+            xv = xv.transpose(1, 2)
+
+            output, aux = self.inner_attention(
+                xq,
+                xk,
+                xv,
+                block_mask=attention_masks,
+                compile=compile,
+                return_aux=True,
+            )
             sinks_BHL = E.rearrange(self.sinks, "h -> 1 h 1")
             sink_scale = torch.sigmoid(aux.lse - sinks_BHL)
             output = (output * sink_scale.unsqueeze(-1)).to(output.dtype)
             output = E.rearrange(output, "b h s d -> b s (h d)").contiguous()
         else:
+            xq = xq.transpose(1, 2)
+            xk = xk.transpose(1, 2)
+            xv = xv.transpose(1, 2)
+            # SDPA handles GQA natively via enable_gqa
             attn_mask = attention_masks if isinstance(attention_masks, torch.Tensor) else None
-            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=attn_mask)
+            output = F.scaled_dot_product_attention(
+                xq, xk, xv, attn_mask=attn_mask, enable_gqa=True
+            )
             output = output.transpose(1, 2).contiguous().reshape(bs, seqlen, -1)
 
         return self.wo(output)

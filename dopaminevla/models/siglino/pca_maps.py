@@ -88,7 +88,9 @@ def extract_patch_features(
     return features_per_image
 
 
-def fit_and_project_pca(feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = True) -> np.ndarray:
+def fit_and_project_pca(
+    feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = True
+) -> np.ndarray:
     x = feats_2d.detach().float().cpu().numpy()
     pca = PCA(n_components=n_components, whiten=whiten)
     pca.fit(x)
@@ -233,7 +235,9 @@ def process_single_image(
     output_filename = f"{image_basename}_pca_vis.png"
     output_path = os.path.join(output_dir, output_filename)
 
-    print(f"Projected shapes - siglino: {projected_all_siglino.shape}, siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}")
+    print(
+        f"Projected shapes - siglino: {projected_all_siglino.shape}, siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
+    )
     render_pca_image(
         image_rgb=image,
         projected_L3=(projected_all_siglino, projected_all_siglip, projected_all_dinov3),
