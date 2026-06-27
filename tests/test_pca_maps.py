@@ -20,7 +20,13 @@ from dopaminevla.models.siglino.pca_maps import (
     render_pca_image,
     sample_jpg_images,
 )
-from dopaminevla.models.siglino.siglino import SigLino, SigLinoHFModel, SigLinoImageProcessor, load_siglino_model, siglino_configs
+from dopaminevla.models.siglino.siglino import (
+    SigLino,
+    SigLinoHFModel,
+    SigLinoImageProcessor,
+    load_siglino_model,
+    siglino_configs,
+)
 from dopaminevla.models.siglino.siglino.hf_integration import SigLinoConfig
 
 
@@ -115,7 +121,11 @@ class TestRenderPCAImage:
         dinov3 = rng.randn(H * W, 3).astype(np.float32)
         return siglino, siglip, dinov3
 
-    def test_saves_png(self, tmp_path: pathlib.Path, synthetic_projections: tuple[np.ndarray, np.ndarray, np.ndarray]) -> None:
+    def test_saves_png(
+        self,
+        tmp_path: pathlib.Path,
+        synthetic_projections: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ) -> None:
         image = _make_small_test_image((64, 64))
         save_path = tmp_path / "test_pca.png"
         render_pca_image(
@@ -202,7 +212,9 @@ class TestExtractPatchFeatures:
         )
         return model, processor
 
-    def test_extracts_all_three_branches(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]) -> None:
+    def test_extracts_all_three_branches(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
         model, processor = model_and_processor
         image = _make_small_test_image((224, 224))
         features_list = extract_patch_features(
@@ -219,7 +231,9 @@ class TestExtractPatchFeatures:
         assert info.features_siglino is not None
         assert info.grid_hw[0] > 0 and info.grid_hw[1] > 0
 
-    def test_feature_no_nan(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]) -> None:
+    def test_feature_no_nan(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
         """Random-init model forward should not produce NaN with proper init_weights."""
         model, processor = model_and_processor
         image = _make_small_test_image((224, 224))
@@ -231,11 +245,17 @@ class TestExtractPatchFeatures:
             max_num_patches=256,
         )
         info = features_list[0]
-        for name, feat in [("siglip", info.features_siglip), ("dinov3", info.features_dinov3), ("siglino", info.features_siglino)]:
+        for name, feat in [
+            ("siglip", info.features_siglip),
+            ("dinov3", info.features_dinov3),
+            ("siglino", info.features_siglino),
+        ]:
             assert not feat.isnan().any(), f"NaN in {name}"
             assert not feat.isinf().any(), f"Inf in {name}"
 
-    def test_multiple_images(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]) -> None:
+    def test_multiple_images(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
         model, processor = model_and_processor
         images = [_make_small_test_image((224, 224)) for _ in range(2)]
         features_list = extract_patch_features(
@@ -247,7 +267,9 @@ class TestExtractPatchFeatures:
         )
         assert len(features_list) == 2
 
-    def test_spatial_grid_matches_patches(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]) -> None:
+    def test_spatial_grid_matches_patches(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
         """Validate that grid_hw matches the actual number of patches returned."""
         model, processor = model_and_processor
         image = _make_small_test_image((224, 224))
@@ -278,7 +300,9 @@ class TestProcessSingleImage:
         )
         return model, processor
 
-    def test_full_pipeline(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path) -> None:
+    def test_full_pipeline(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path
+    ) -> None:
         model, processor = model_and_processor
         image_path = tmp_path / "input.png"
         _make_small_test_image((224, 224)).save(str(image_path))
@@ -298,7 +322,9 @@ class TestProcessSingleImage:
         assert len(png_files) == 1
         assert png_files[0].stat().st_size > 0
 
-    def test_output_naming(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path) -> None:
+    def test_output_naming(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path
+    ) -> None:
         model, processor = model_and_processor
         image_path = tmp_path / "my_photo.png"
         _make_small_test_image((224, 224)).save(str(image_path))
@@ -316,7 +342,9 @@ class TestProcessSingleImage:
         expected = output_dir / "my_photo_pca_vis.png"
         assert expected.exists(), f"Expected {expected}"
 
-    def test_pca_projection_finite(self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path) -> None:
+    def test_pca_projection_finite(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor], tmp_path: pathlib.Path
+    ) -> None:
         """Confirm the PCA step doesn't produce NaN/Inf from the extracted features."""
         model, processor = model_and_processor
         image_path = tmp_path / "input.png"

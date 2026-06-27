@@ -459,7 +459,9 @@ class TestSigLinoEdgeCases:
         feats = out["patch_features"]["siglino"]
         # 288/16=18, 192/16=12 → 18*12 = 216 patches + 4 registers
         n_reg = model.n_storage_tokens
-        assert feats.shape[1] == 18 * 12 + n_reg, f"Expected {18*12+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert feats.shape[1] == 18 * 12 + n_reg, (
+            f"Expected {18 * 12 + n_reg} (patches+registers), got {feats.shape[1]}"
+        )
         assert not feats.isnan().any()
 
     def test_variable_spatial_shapes_in_batch(self) -> None:
@@ -504,7 +506,9 @@ class TestSigLinoEdgeCases:
         out = model(pixel_values=x)
         feats = out["patch_features"]["siglino"]
         # 112/16=7 → 7*7=49 patches (not 6*6=36 which would indicate cropping) + registers
-        assert feats.shape[1] == 7 * 7 + n_reg, f"Expected {7*7+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert feats.shape[1] == 7 * 7 + n_reg, (
+            f"Expected {7 * 7 + n_reg} (patches+registers), got {feats.shape[1]}"
+        )
         assert not feats.isnan().any()
         assert not feats.isinf().any()
 
@@ -518,5 +522,7 @@ class TestSigLinoEdgeCases:
         out = model(pixel_values=x)
         feats = out["patch_features"]["siglino"]
         assert feats.shape[0] == 2
-        assert feats.shape[1] == 7 * 7 + n_reg, f"Expected {7*7+n_reg} (patches+registers), got {feats.shape[1]}"
+        assert feats.shape[1] == 7 * 7 + n_reg, (
+            f"Expected {7 * 7 + n_reg} (patches+registers), got {feats.shape[1]}"
+        )
         assert not feats.isnan().any()
