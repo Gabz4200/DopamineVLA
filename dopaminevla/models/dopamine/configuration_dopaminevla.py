@@ -30,6 +30,14 @@ class DopamineVLAVisionConfig(SigLinoConfig):
 
     model_type = "dopaminevla_vision"
 
+    def __init__(
+        self,
+        vision_feature_layers: int = 1,
+        **kwargs: Any,
+    ) -> None:
+        self.vision_feature_layers = vision_feature_layers
+        super().__init__(**kwargs)
+
 
 class DopamineVLAConfig(PretrainedConfig):
     """Configuration for DopamineVLA vision-language-action model.
@@ -51,7 +59,7 @@ class DopamineVLAConfig(PretrainedConfig):
         pad_token_id: int | None = 128_002,
         scale_factor: int = 2,
         attn_implementation: str = "eager",
-        vision_connector_n_latents: int = 64,
+        vision_connector_n_latents: int = 128,
         vision_connector_n_layers: int = 3,
         vision_connector_n_heads: int = 16,
         vision_connector_head_dim: int = 96,
@@ -59,12 +67,14 @@ class DopamineVLAConfig(PretrainedConfig):
         vision_connector_ffn_mult: int = 4,
         vision_connector_attn_dropout: float = 0.0,
         vision_connector_rms_eps: float = 1e-6,
+        vision_feature_layers: int = 1,
         **kwargs: Any,
     ) -> None:
-        # Resolve vision config
+        # Resolve vision config — forward vision_feature_layers
         if vision_config is None:
-            vision_config = DopamineVLAVisionConfig()
+            vision_config = DopamineVLAVisionConfig(vision_feature_layers=vision_feature_layers)
         elif isinstance(vision_config, dict):
+            vision_config.setdefault("vision_feature_layers", vision_feature_layers)
             vision_config = DopamineVLAVisionConfig(**vision_config)
 
         # Resolve text config
@@ -81,8 +91,11 @@ class DopamineVLAConfig(PretrainedConfig):
             )
 
         # Store resolved configs as instance attributes
-        self.vision_config: DopamineVLAVisionConfig | PretrainedConfig = vision_config
+        self.vision_config: DopamineVLAVisionConfig | PretrainedConfig = vision_config  # pyrefly: ignore[bad-assignment]
         self.text_config: PretrainedConfig = text_config
+
+        # Stacked vision layers (1 = last layer only, >1 = last N layers, -1 = all)
+        self.vision_feature_layers = vision_feature_layers
 
         # Connector params (used by DopamineVLAConnector)
         self.vision_connector_n_latents = vision_connector_n_latents

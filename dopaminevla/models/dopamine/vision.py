@@ -43,8 +43,12 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
         self,
         pixel_values: torch.Tensor,
         patch_attention_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
         """Forward a batch of images through the SigLino encoder.
+
+        When ``config.vision_feature_layers > 1``, returns features from multiple
+        transformer layers (deep-stack style) so the Perceiver connector sees
+        hierarchical visual representations.
 
         Parameters
         ----------
@@ -57,10 +61,11 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
 
         Returns
         -------
-        features : (B, L, hidden_size) torch.Tensor
-            Patch-level features (registers + patches, no CLS).
-        mask : (B, L) torch.Tensor bool
-            ``True`` = valid patch / register.
+        features : tuple of (B, L, hidden_size) torch.Tensor
+            Patch-level features (registers + patches, no CLS), one per selected
+            vision layer.  Tuple length = min(|vision_feature_layers|, n_layers).
+        masks : tuple of (B, L) torch.Tensor bool
+            Padding masks for each feature tensor.
         """
         if patch_attention_mask is None:
             b, _, h, w = pixel_values.shape
@@ -75,7 +80,7 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
         self,
         pixel_values: torch.Tensor,
         padding_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
         b, _, h, w = pixel_values.shape
 
         out = self.vision_model(
@@ -86,15 +91,42 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
                 dtype=torch.long,
                 device=pixel_values.device,
             ),
+            # Always request hidden states for potential layer stacking
+            output_hidden_states=bool(
+                self.config.vision_feature_layers > 1 or self.config.vision_feature_layers == -1
+            ),
         )
-        features = out["patch_features"]["siglino"]
+
+        # Determine which layers to stack
+        n_layers_to_stack = self.config.vision_feature_layers
+        hidden_states = out.get("hidden_states")
+
+        if hidden_states is not None and n_layers_to_stack != 1:
+            # Select layers
+            n_total = len(hidden_states)
+            if n_layers_to_stack == -1 or n_layers_to_stack >= n_total:
+                selected = hidden_states
+            else:
+                selected = hidden_states[-n_layers_to_stack:]
+
+            # Strip CLS token; keep registers + patches matching connector_mask
+            # hidden_states[i] shape: (N, S, D) where S = 1 + n_storage_tokens + L
+            # We slice hs[:, 1:] to drop position 0 (CLS) → (N, S-1, D) matches mask
+            stacked_features = tuple(hs[:, 1:].contiguous() for hs in selected)
+        else:
+            # Single layer — use the pre-computed patch_features (current behavior)
+            stacked_features = (out["patch_features"]["siglino"],)
+
+        # Build mask (shared by all layers since they share the same sequence)
         mask = out.get("padding_mask")
         if mask is not None:
             mask = mask.bool()  # (N, L) float32 -> bool
         else:
-            N, L = features.shape[:2]
-            mask = torch.ones(N, L, dtype=torch.bool, device=features.device)
-        return features, mask
+            N, L = stacked_features[0].shape[:2]
+            mask = torch.ones(N, L, dtype=torch.bool, device=stacked_features[0].device)
+
+        masks = tuple(mask for _ in stacked_features)
+        return stacked_features, masks
 
 
 __all__ = ["DopamineVLAVisionTransformer"]
