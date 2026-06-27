@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 import torch
 
-from dopaminevla.models.dopamine.dopamine import (
+from dopaminevla.models.dopamine import (
     DopamineVLABaseModelOutputWithPast,
     DopamineVLACausalLMOutputWithPast,
     DopamineVLAConfig,

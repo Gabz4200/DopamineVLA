@@ -12,4 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .dopamine import *  # noqa: F403
+"""DopamineVLA — self-contained vision-language-action model.
+
+Depends only on PyTorch and base transformers (PreTrainedConfig, PreTrainedModel,
+ModelOutput, GenerationMixin).  Vision encoder = SigLino (our own).  No SmolVLM,
+Idefics, or other HF model subclasses.
+"""
+
+from .base import DopamineVLAPreTrainedModel
+from .configuration_dopaminevla import DopamineVLAConfig, DopamineVLAVisionConfig
+from .connector import (
+    DopamineVLAConnector,
+    DopamineVLAPerceiverAttention,
+    DopamineVLAPerceiverLayer,
+)
+from .crop import DopamineVLAMultiViewCrop
+from .generation import DopamineVLAForConditionalGeneration
+from .merger import DopamineVLAInputsMerger
+from .model import DopamineVLAModel
+from .outputs import DopamineVLABaseModelOutputWithPast, DopamineVLACausalLMOutputWithPast
+from .vision import DopamineVLAVisionTransformer
+
+__all__ = [
+    "DopamineVLAVisionConfig",
+    "DopamineVLAConfig",
+    "DopamineVLAPreTrainedModel",
+    "DopamineVLAMultiViewCrop",
+    "DopamineVLAVisionTransformer",
+    "DopamineVLABaseModelOutputWithPast",
+    "DopamineVLACausalLMOutputWithPast",
+    "DopamineVLAInputsMerger",
+    "DopamineVLAConnector",
+    "DopamineVLAPerceiverAttention",
+    "DopamineVLAPerceiverLayer",
+    "DopamineVLAModel",
+    "DopamineVLAForConditionalGeneration",
+]
