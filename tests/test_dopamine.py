@@ -389,7 +389,10 @@ class TestVisionTransformer:
         vt = DopamineVLAVisionTransformer(config.vision_config)
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
-        features, mask = vt(x)
+        features_tuple, masks_tuple = vt(x)
+        # With default vision_feature_layers=1, returns 1-tuple
+        features = features_tuple[0]
+        mask = masks_tuple[0]
         assert features.ndim == 3, f"expected (B, L, D), got {features.shape}"
         assert features.shape[0] == 1
         assert features.shape[2] == config.vision_config.hidden_size
@@ -401,7 +404,8 @@ class TestVisionTransformer:
         vt = DopamineVLAVisionTransformer(config.vision_config)
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
-        features, _ = vt(x)
+        features_tuple, _ = vt(x)
+        features = features_tuple[0]
         assert not features.isnan().any(), "Features have NaN"
         assert not features.isinf().any(), "Features have Inf"
 
