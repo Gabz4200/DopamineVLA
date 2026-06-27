@@ -26,7 +26,7 @@ class DopamineVLAPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     input_modalities = ["image", "text"]
     supports_gradient_checkpointing = True
-    _no_split_modules = ["DopamineVLAVisionAttention", "DopamineVLAEncoderLayer"]
+    _no_split_modules: list[str] | set[str] | None = []
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
