@@ -192,12 +192,16 @@ def load_siglino_model(
                     effective_config = match
                 else:
                     print(
-                        f"Warning: No matching local config for '{effective_ckpt}', using checkpoint metadata directly"
+                        (
+                        f"Warning: No matching local config for "
+                        f"'{effective_ckpt}', using checkpoint metadata directly"
+                    )
                     )
                     inferred_args = hub_args
             elif os.path.isfile(effective_ckpt):
                 raise ValueError(
-                    "Cannot infer config from a local checkpoint file. Please provide --config_name explicitly."
+                    "Cannot infer config from a local checkpoint file. "
+                    "Please provide --config_name explicitly."
                 )
 
         # (3) Both given → validate match

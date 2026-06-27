@@ -224,7 +224,10 @@ def process_single_image(
     feats_LD_dinov3 = info.features_dinov3[:num_valid]
     feats_LD_siglino = info.features_siglino[:num_valid]
 
-    msg = f"Feature shapes - siglip: {feats_LD_siglip.shape}, dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
+    msg = (
+        f"Feature shapes - siglip: {feats_LD_siglip.shape}, "
+        f"dinov3: {feats_LD_dinov3.shape}, siglino: {feats_LD_siglino.shape}"
+    )
     print(msg)
 
     projected_all_siglip = fit_and_project_pca(feats_LD_siglip)
@@ -236,7 +239,8 @@ def process_single_image(
     output_path = os.path.join(output_dir, output_filename)
 
     print(
-        f"Projected shapes - siglino: {projected_all_siglino.shape}, siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
+        f"Projected shapes - siglino: {projected_all_siglino.shape}, "
+        f"siglip: {projected_all_siglip.shape}, dinov3: {projected_all_dinov3.shape}"
     )
     render_pca_image(
         image_rgb=image,
