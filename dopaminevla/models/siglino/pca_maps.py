@@ -55,7 +55,7 @@ def extract_patch_features(
             image,
             max_num_patches=max_num_patches,
             n_storage_tokens=_get_n_storage_tokens(model),
-            pad=False,
+            pad=True,
         )
         pixel_values = processed["pixel_values"].to(device, dtype=dtype)
         padding_mask = processed["padding_mask"].to(device)
@@ -74,7 +74,9 @@ def extract_patch_features(
 
         feats_siglip = patch_feats["siglip2"].squeeze(0)
         feats_dinov3 = patch_feats["dinov3"].squeeze(0)
-        feats_siglino = patch_feats["siglino"].squeeze(0)
+        # SigLino features include register tokens at the front; skip them
+        n_reg = _get_n_storage_tokens(model)
+        feats_siglino = patch_feats["siglino"].squeeze(0)[n_reg:]
 
         features_per_image.append(
             SigLinoFeatures(
@@ -89,7 +91,7 @@ def extract_patch_features(
 
 
 def fit_and_project_pca(
-    feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = True
+    feats_2d: torch.Tensor, n_components: int = 3, whiten: bool = False
 ) -> np.ndarray:
     x = feats_2d.detach().float().cpu().numpy()
     pca = PCA(n_components=n_components, whiten=whiten)
