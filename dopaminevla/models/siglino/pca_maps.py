@@ -106,6 +106,7 @@ def render_pca_image(
     grid_hw: tuple[int, int],
     save_path: str,
     title: str | None = None,
+    use_min_max: bool = False,
 ) -> None:
     projected_siglino, projected_siglip, projected_dinov3 = projected_L3
 
@@ -114,7 +115,16 @@ def render_pca_image(
     def create_pca_grid(projected_features: np.ndarray) -> np.ndarray:
         grid_hw3 = projected_features.reshape(H, W, 3).astype(np.float32)
         grid_hw3 = np.nan_to_num(grid_hw3, nan=0.0, posinf=1.0, neginf=0.0)
-        grid_hw3 = 1.0 / (1.0 + np.exp(-2.0 * grid_hw3))
+        if use_min_max:
+            for c in range(3):
+                mn, mx = grid_hw3[:, :, c].min(), grid_hw3[:, :, c].max()
+                span = mx - mn
+                if span > 1e-8:
+                    grid_hw3[:, :, c] = (grid_hw3[:, :, c] - mn) / span
+                else:
+                    grid_hw3[:, :, c] = 0.5  # flat channel → mid-gray
+        else:
+            grid_hw3 = 1.0 / (1.0 + np.exp(-2.0 * grid_hw3))
         return grid_hw3
 
     viz_items = []
@@ -206,6 +216,7 @@ def process_single_image(
     processor: SigLinoImageProcessor,
     device: str | torch.device | None = None,
     max_num_patches: int = 256,
+    use_min_max: bool = False,
 ) -> None:
     if device is not None and not isinstance(device, torch.device):
         device = torch.device(device)
@@ -250,6 +261,7 @@ def process_single_image(
         grid_hw=info.grid_hw,
         save_path=output_path,
         title=os.path.basename(image_path),
+        use_min_max=use_min_max,
     )
 
     print(f"Saved visualization: {output_path}")
@@ -269,6 +281,11 @@ def main() -> None:
     parser.add_argument("--config_name", type=str, default="dense-30M")
     parser.add_argument("--device", type=str, default=None, help="Device (default: auto-detect)")
     parser.add_argument("--max_num_patches", type=int, default=256)
+    parser.add_argument(
+        "--use-min-max",
+        action="store_true",
+        help="Use per-channel min-max normalization instead of sigmoid for PCA rendering",
+    )
     args = parser.parse_args()
 
     if args.device is None:
@@ -300,6 +317,7 @@ def main() -> None:
             processor=processor,
             device=args.device,
             max_num_patches=args.max_num_patches,
+            use_min_max=args.use_min_max,
         )
 
     print(f"Completed! All visualizations saved in: {args.output_path}")
