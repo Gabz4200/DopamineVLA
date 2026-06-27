@@ -196,7 +196,7 @@ def render_pca_image(
     grid_hw: tuple[int, int],
     save_path: str,
     title: str | None = None,
-    use_min_max: bool = False,
+    use_sigmoid: bool = False,
 ) -> None:
     projected_siglino, projected_siglip, projected_dinov3 = projected_L3
 
@@ -204,17 +204,24 @@ def render_pca_image(
 
     def create_pca_grid(projected_features: np.ndarray) -> np.ndarray:
         grid_hw3 = projected_features.reshape(H, W, 3).astype(np.float32)
-        grid_hw3 = np.nan_to_num(grid_hw3, nan=0.0, posinf=1.0, neginf=0.0)
-        if use_min_max:
-            for c in range(3):
-                mn, mx = grid_hw3[:, :, c].min(), grid_hw3[:, :, c].max()
-                span = mx - mn
-                if span > 1e-8:
-                    grid_hw3[:, :, c] = (grid_hw3[:, :, c] - mn) / span
-                else:
-                    grid_hw3[:, :, c] = 0.5  # flat channel → mid-gray
-        else:
+        # Safety: guard NaN/Inf before any further processing
+        grid_hw3 = np.nan_to_num(grid_hw3, nan=0.0, posinf=0.0, neginf=0.0)
+        if use_sigmoid:
+            # Sigmoid: unbounded, saturates at |x| > 3. Tendency to oversaturate
+            # and produce black points from extreme negative outliers.
             grid_hw3 = 1.0 / (1.0 + np.exp(-2.0 * grid_hw3))
+        else:
+            # Robust min-max: clip outliers per channel before scaling to [0, 1].
+            # This prevents oversaturation from high-variance features and
+            # eliminates black points from extreme negative outliers.
+            for c in range(3):
+                channel = grid_hw3[:, :, c]
+                lo, hi = np.percentile(channel, [1, 99])
+                span = hi - lo
+                if span > 1e-8:
+                    grid_hw3[:, :, c] = np.clip((channel - lo) / span, 0.0, 1.0)
+                else:
+                    grid_hw3[:, :, c] = 0.5
         return grid_hw3
 
     viz_items = []
@@ -313,7 +320,13 @@ def _smooth_features_2d(
     """
     D = feats_LD.shape[-1]
     grid = feats_LD.view(H, W, D).permute(2, 0, 1).unsqueeze(0)  # (1, D, H, W)
-    smoothed = F.avg_pool2d(grid, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+    # Replicate-pad before pooling to avoid zero-boundary distortion (the "ring" artifact).
+    # Zero padding dilutes edge features with zeros, creating a distinct PCA cluster
+    # at boundaries that renders as a discolored border.
+    pad = kernel_size // 2
+    if pad > 0:
+        grid = F.pad(grid, (pad, pad, pad, pad), mode="replicate")
+    smoothed = F.avg_pool2d(grid, kernel_size=kernel_size, stride=1, padding=0)
     return smoothed.squeeze(0).permute(1, 2, 0).reshape(-1, D)
 
 
@@ -324,7 +337,7 @@ def process_single_image(
     processor: SigLinoImageProcessor,
     device: str | torch.device | None = None,
     max_num_patches: int = 256,
-    use_min_max: bool = False,
+    use_sigmoid: bool = False,
     apply_feature_averaging: int = 0,
     blend_layer: int | list[int] | None = None,
 ) -> None:
@@ -382,7 +395,7 @@ def process_single_image(
         grid_hw=info.grid_hw,
         save_path=output_path,
         title=os.path.basename(image_path),
-        use_min_max=use_min_max,
+        use_sigmoid=use_sigmoid,
     )
 
     print(f"Saved visualization: {output_path}")
@@ -430,9 +443,11 @@ def main() -> None:
         "no model changes. Negative indices count from the last layer.",
     )
     parser.add_argument(
-        "--use-min-max",
+        "--use-sigmoid",
         action="store_true",
-        help="Use per-channel min-max normalization instead of sigmoid for PCA rendering",
+        help="Use sigmoid scaling (old behavior) instead of robust percentile-clipped min-max "
+        "for PCA rendering. Sigmoid oversaturates with high-variance features and "
+        "produces black points from extreme outliers.",
     )
     args = parser.parse_args()
 
@@ -483,7 +498,7 @@ def main() -> None:
             processor=processor,
             device=args.device,
             max_num_patches=max_patches,
-            use_min_max=args.use_min_max,
+            use_sigmoid=args.use_sigmoid,
             apply_feature_averaging=args.feature_averaging,
             blend_layer=args.blend_layer,
         )
