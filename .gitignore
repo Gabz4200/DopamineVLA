@@ -224,5 +224,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# PCA visualization output images
+**/pca_visualizations/
+
 # Streamlit
 .streamlit/secrets.toml
