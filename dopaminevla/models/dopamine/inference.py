@@ -65,13 +65,7 @@ imgs = [preprocess_image(img) for img in raw_images]
 # Pad to common spatial size so they can be batched
 max_h = max(img.shape[1] for img in imgs)
 max_w = max(img.shape[2] for img in imgs)
-pixel_values_list = []
-for img in imgs:
-    h, w = img.shape[1:]
-    pad_h, pad_w = max_h - h, max_w - w
-    if pad_h > 0 or pad_w > 0:
-        img = F.pad(img, (0, pad_w, 0, pad_h))
-    pixel_values_list.append(img)
+pixel_values_list = [F.pad(img, (0, max_w - img.shape[2], 0, max_h - img.shape[1])) for img in imgs]
 
 pixel_values = torch.stack(pixel_values_list).unsqueeze(0)  # (1, N, 3, H, W)
 print(f"  pixel_values: {tuple(pixel_values.shape)}")

@@ -24,25 +24,18 @@ def precompute_freqs_cis(
     dim: int, end: int, theta: float = 10000.0, device: str = "cpu"
 ) -> torch.Tensor:
     """Precompute frequency tensor for 1D rotary embeddings."""
+    _dev = device if device else DEVICE
     if end > 0:
-        freqs = 1.0 / (
-            theta
-            ** (
-                torch.arange(0, dim, 2, device=device if device else DEVICE)[: (dim // 2)].float()
-                / dim
-            )
-        )
-        t_cpu = torch.arange(end, device=device if device else DEVICE)
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=_dev)[: (dim // 2)].float() / dim))
+        t_cpu = torch.arange(end, device=_dev)
         freqs = torch.outer(t_cpu, freqs).float()
         freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
         return freqs_cis
     else:
-        return torch.tensor([], dtype=torch.complex64, device=device if device else DEVICE)
+        return torch.tensor([], dtype=torch.complex64, device=_dev)
 
 
-def reshape_for_broadcast(
-    freqs_cis: torch.Tensor, x: torch.Tensor, device: str = "cpu"
-) -> torch.Tensor:
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     ndim = x.ndim
     seqlen = x.shape[1]
     freqs_cis = freqs_cis[:seqlen]
@@ -106,13 +99,10 @@ def _phi(m: int, device: str = "cpu") -> float:
 
 
 def make_directions(n: int, d: int, device: str = "cpu") -> torch.Tensor:
+    _dev = device if device else DEVICE
     g = _phi(d)
-    alpha = (1.0 / g) ** torch.arange(
-        1, d + 1, dtype=torch.float64, device=device if device else DEVICE
-    )
-    i = torch.arange(1, n + 1, dtype=torch.float64, device=device if device else DEVICE).unsqueeze(
-        1
-    )
+    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=_dev)
+    i = torch.arange(1, n + 1, dtype=torch.float64, device=_dev).unsqueeze(1)
     z = torch.fmod(i * alpha, 1.0)
     directions = torch.erfinv(2.0 * z - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
@@ -133,12 +123,11 @@ def precompute_golden_freqs_cis(
     n_zero_freqs = round(p_zero_freqs * n_freqs)
 
     # from Transformers from_pretrained(). register_buffer moves to correct device.
-    zeros = torch.zeros(n_zero_freqs, device=device if device else DEVICE)
+    _dev = device if device else DEVICE
+    zeros = torch.zeros(n_zero_freqs, device=_dev)
 
     if n_freqs - n_zero_freqs > 0:
-        linspace_vals = torch.linspace(
-            0, 1, n_freqs - n_zero_freqs, device=device if device else DEVICE
-        )
+        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device=_dev)
         scaled_vals = min_freq * (max_freq / min_freq) ** linspace_vals
         omega_F = torch.cat((zeros, scaled_vals))
     else:

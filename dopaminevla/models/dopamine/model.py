@@ -48,7 +48,7 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
         self.text_model = AutoModel.from_config(config.text_config)
 
         self.image_token_id = self.config.image_token_id
-        self.inputs_merger_module = DopamineVLAInputsMerger(self.image_token_id)
+        self.inputs_merger = DopamineVLAInputsMerger(self.image_token_id)
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Module:
@@ -56,15 +56,6 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
 
     def set_input_embeddings(self, value: nn.Module) -> None:
         self.text_model.set_input_embeddings(value)
-
-    def inputs_merger(
-        self,
-        input_ids: torch.Tensor | None,
-        inputs_embeds: torch.Tensor,
-        image_hidden_states: torch.Tensor,
-    ) -> torch.Tensor:
-        """Merge image hidden states into the token-embedding sequence."""
-        return self.inputs_merger_module(input_ids, inputs_embeds, image_hidden_states)
 
     @can_return_tuple
     def get_image_features(

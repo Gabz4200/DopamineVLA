@@ -194,10 +194,11 @@ class DopamineVLAConnector(nn.Module):
         B = view_hidden_states[0].size(0)
 
         # 1. Concatenate all views into one context sequence.
-        if len(view_hidden_states) == 1:
-            context = view_hidden_states[0]
-        else:
-            context = torch.cat(view_hidden_states, dim=1)  # (B, sum(L_i), D_vis)
+        context = (
+            view_hidden_states[0]
+            if len(view_hidden_states) == 1
+            else torch.cat(view_hidden_states, dim=1)
+        )  # (B, sum(L_i), D_vis)
 
         # 2. Build a unified attention mask for the full context + latents.
         attn_mask = None
