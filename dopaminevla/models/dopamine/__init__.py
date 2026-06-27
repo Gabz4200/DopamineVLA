@@ -26,7 +26,6 @@ from .connector import (
     DopamineVLAPerceiverAttention,
     DopamineVLAPerceiverLayer,
 )
-from .crop import DopamineVLAMultiViewCrop
 from .generation import DopamineVLAForConditionalGeneration
 from .merger import DopamineVLAInputsMerger
 from .model import DopamineVLAModel
@@ -37,7 +36,6 @@ __all__ = [
     "DopamineVLAVisionConfig",
     "DopamineVLAConfig",
     "DopamineVLAPreTrainedModel",
-    "DopamineVLAMultiViewCrop",
     "DopamineVLAVisionTransformer",
     "DopamineVLABaseModelOutputWithPast",
     "DopamineVLACausalLMOutputWithPast",

@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 
 from dopaminevla.models.siglino.pca_maps import (
+    _compute_pos_interpolation,
     _get_n_storage_tokens,
     extract_patch_features,
     fit_and_project_pca,
@@ -287,6 +288,50 @@ class TestExtractPatchFeatures:
         assert info.features_siglip.shape[0] >= num_valid
         assert info.features_dinov3.shape[0] >= num_valid
 
+    def test_mask_safety_padded_image_no_nan(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
+        """Small image with large max_num_patches: mask safety path should prevent NaN."""
+        model, processor = model_and_processor
+        # A 32x32 image produces ~4 patches in the default 16x16 grid.
+        # max_num_patches=256 means lots of padding tokens.
+        image = _make_small_test_image((32, 32))
+        features_list = extract_patch_features(
+            model=model,
+            processor=processor,
+            images=[image],
+            device=torch.device("cpu"),
+            max_num_patches=256,
+        )
+        info = features_list[0]
+        for name, feat in [
+            ("siglip", info.features_siglip),
+            ("dinov3", info.features_dinov3),
+            ("siglino", info.features_siglino),
+        ]:
+            assert not feat.isnan().any(), f"NaN in {name}"
+            assert not feat.isinf().any(), f"Inf in {name}"
+
+    def test_mask_safety_large_max_patches(
+        self, model_and_processor: tuple[SigLino, SigLinoImageProcessor]
+    ) -> None:
+        """Even with very large max_num_patches, features should remain valid."""
+        model, processor = model_and_processor
+        image = _make_small_test_image((224, 224))
+        features_list = extract_patch_features(
+            model=model,
+            processor=processor,
+            images=[image],
+            device=torch.device("cpu"),
+            max_num_patches=4096,
+        )
+        info = features_list[0]
+        # With 4096 max patches, the 224x224 image produces H*W < 4096,
+        # so there should be padding tokens. Features should be clean.
+        for feat in [info.features_siglip, info.features_dinov3, info.features_siglino]:
+            assert not feat.isnan().any(), "NaN in features"
+            assert not feat.isinf().any(), "Inf in features"
+
 
 class TestProcessSingleImage:
     """End-to-end orchestration: model + image → saved PCA visualization."""
@@ -360,3 +405,38 @@ class TestProcessSingleImage:
             max_num_patches=256,
         )
         assert list(output_dir.glob("*_pca_vis.png"))[0].stat().st_size > 0
+
+
+class TestPosInterpolation:
+    def test_grid_dim_16_gives_256_patches(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(16)
+        assert max_patches == 256, f"expected 256, got {max_patches}"
+        assert max_pixels == (16 * 16) ** 2, f"expected {(16 * 16) ** 2}, got {max_pixels}"
+
+    def test_grid_dim_32_gives_1024_patches(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(32)
+        assert max_patches == 1024, f"expected 1024, got {max_patches}"
+        assert max_pixels == (32 * 16) ** 2, f"expected {(32 * 16) ** 2}, got {max_pixels}"
+
+    def test_grid_dim_64_gives_4096_patches(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(64)
+        assert max_patches == 4096, f"expected 4096, got {max_patches}"
+        assert max_pixels == (64 * 16) ** 2, f"expected {(64 * 16) ** 2}, got {max_pixels}"
+
+    def test_zero_grid_dim_uses_default(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(0)
+        assert max_patches == 256, "disabled interpolation should use default_max_num_patches"
+        assert max_pixels == (16 * 16) ** 2
+
+    def test_small_grid_dim_uses_default(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(8)
+        assert max_patches == 256, "grid_dim < 16 should use default"
+
+    def test_custom_default_preserved_when_disabled(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(0, default_max_num_patches=512)
+        assert max_patches == 512, "custom default should be used when disabled"
+        assert max_pixels == int((512**0.5 * 16) ** 2)
+
+    def test_negative_grid_dim_uses_default(self) -> None:
+        max_patches, max_pixels = _compute_pos_interpolation(-4)
+        assert max_patches == 256, "negative grid_dim should use default"

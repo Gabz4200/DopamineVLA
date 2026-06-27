@@ -17,6 +17,7 @@ from dopaminevla.models.siglino.siglino import (
     siglino_configs,
 )
 from dopaminevla.models.siglino.siglino.configs import MoEArgs
+from dopaminevla.models.siglino.siglino.image_processor import pad_along_first_dim
 from dopaminevla.models.siglino.siglino.utils import (
     _find_matching_config_name,
     _is_hub_id,
@@ -324,6 +325,51 @@ class TestSigLinoImageProcessor:
         imgs = [Image.new("RGB", (224, 224)) for _ in range(3)]
         out = processor(imgs)
         assert out["pixel_values"].shape[0] == 3
+
+    def test_pad_along_first_dim_truncates_when_exceeds_target(self) -> None:
+        """When patches > target_length, pad_along_first_dim truncates."""
+        arr = torch.arange(30).reshape(10, 3).float()
+        padded, mask = pad_along_first_dim(arr, target_length=6)
+        assert padded.shape[0] == 6, "should truncate to target_length"
+        assert mask.shape[0] == 6, "mask should match truncated length"
+        assert mask.sum().item() == 6, "mask should be all-1s (no padding)"
+        assert torch.equal(padded, arr[:6]), "should preserve first 6 entries"
+
+    def test_pad_along_first_dim_pads_when_under_target(self) -> None:
+        """When patches < target_length, pad_along_first_dim pads with zeros."""
+        arr = torch.arange(9).reshape(3, 3).float()
+        padded, mask = pad_along_first_dim(arr, target_length=8)
+        assert padded.shape[0] == 8, "should extend to target_length"
+        assert mask.shape[0] == 8, "mask should match padded length"
+        assert mask.sum().item() == 3, "only first 3 positions are real"
+        assert (mask[:3] == 1).all(), "real positions have mask=1"
+        assert (mask[3:] == 0).all(), "padded positions have mask=0"
+        assert torch.equal(padded[:3], arr), "should preserve original values"
+        assert (padded[3:] == 0).all(), "padded entries should be zero-filled"
+
+    def test_pad_along_first_dim_exact_match(self) -> None:
+        """When patches == target_length, no changes."""
+        arr = torch.arange(12).reshape(4, 3).float()
+        padded, mask = pad_along_first_dim(arr, target_length=4)
+        assert padded.shape[0] == 4
+        assert mask.sum().item() == 4
+        assert (mask == 1).all()
+        assert torch.equal(padded, arr)
+
+    def test_pad_along_first_dim_truncates_all_ones_mask(self) -> None:
+        """After truncation, mask has no zeros — all truncated entries are real."""
+        arr = torch.randn(50, 8)
+        padded, mask = pad_along_first_dim(arr, target_length=16)
+        assert padded.shape[0] == 16
+        assert (mask == 1).all(), "truncated mask should be entirely ones"
+
+    def test_pad_along_first_dim_preserves_dtype_and_device(self) -> None:
+        """Output dtype and device should match input."""
+        arr = torch.randn(5, 4, dtype=torch.float64)
+        padded, mask = pad_along_first_dim(arr, target_length=10)
+        assert padded.dtype == arr.dtype
+        # mask should be float32 by default
+        assert padded.shape[0] == 10
 
 
 class TestLoadSiglinoModel:

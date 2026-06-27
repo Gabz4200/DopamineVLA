@@ -70,6 +70,7 @@ class SigLinoConfig(PretrainedConfig):
         n_storage_tokens: int = 4,
         teachers: tuple[str, ...] = ("siglip2", "dinov3"),
         teachers_dim: tuple[int, ...] = (1152, 1024),
+        depth_init: bool = True,
         use_flex_attn: bool = True,
         **kwargs: Any,
     ) -> None:
@@ -92,6 +93,7 @@ class SigLinoConfig(PretrainedConfig):
         use_tok_norm = kwargs.pop("use_tok_norm", use_tok_norm)
         parameterized_norm = kwargs.pop("parameterized_norm", parameterized_norm)
         n_storage_tokens = kwargs.pop("n_storage_tokens", n_storage_tokens)
+        depth_init = kwargs.pop("depth_init", depth_init)
         use_flex_attn = kwargs.pop("use_flex_attn", use_flex_attn)
         first_n_layers_dense = kwargs.pop("first_n_layers_dense", first_n_layers_dense)
         moe_dim = kwargs.pop("moe_dim", moe_dim)
@@ -145,6 +147,7 @@ class SigLinoConfig(PretrainedConfig):
         self.n_storage_tokens = n_storage_tokens
         self.teachers = list(teachers)
         self.teachers_dim = list(teachers_dim)
+        self.depth_init = depth_init
         self.use_flex_attn = use_flex_attn
         super().__init__(**kwargs)
 
@@ -183,6 +186,7 @@ class SigLinoConfig(PretrainedConfig):
             use_tok_norm=self.use_tok_norm,
             parameterized_norm=self.parameterized_norm,
             n_storage_tokens=self.n_storage_tokens,
+            depth_init=self.depth_init,
             teachers=tuple(self.teachers),
             teachers_dim=tuple(self.teachers_dim),
             use_flex_attn=self.use_flex_attn,
@@ -234,6 +238,7 @@ class SigLinoConfig(PretrainedConfig):
             use_tok_norm=args.use_tok_norm,
             parameterized_norm=args.parameterized_norm,
             n_storage_tokens=args.n_storage_tokens,
+            depth_init=args.depth_init,
             teachers=args.teachers,
             teachers_dim=args.teachers_dim,
             use_flex_attn=args.use_flex_attn,

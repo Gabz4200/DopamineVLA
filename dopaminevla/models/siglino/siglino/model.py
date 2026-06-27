@@ -154,7 +154,7 @@ class TransformerBlock(nn.Module):
             self.feed_forward = FeedForward(args.dim, args.moe_dim)
             self.moe_enabled = False
 
-        if args.depth_init if hasattr(args, "depth_init") else True:
+        if args.depth_init:
             self.weight_init_std = 0.02 / (2 * (layer_id + 1)) ** 0.5
         else:
             self.weight_init_std = 0.02 / (2 * args.n_layers) ** 0.5
@@ -258,9 +258,8 @@ class SigLino(nn.Module):
         for param in self.siglip2_multihead_attention_pooling_head.parameters():
             param.requires_grad = False
 
-        # Cache for block masks (instance-level, not shared across instances)
-        self._cached_block_mask: BlockMask | None = None
-        self._cached_mask_key: tuple[int, int, float, torch.device] | None = None
+        # Block mask is created each call — caching is unsafe because the
+        # mask-sum cache key is lossy for different mask patterns with same sum.
 
         # Precompute RoPE buffers on CPU (survives meta-device init context)
         self._post_init()
@@ -399,10 +398,6 @@ class SigLino(nn.Module):
         N, S = full_mask.shape
 
         if self._use_flex_attn_on_device(device):
-            mask_key = (N, S, full_mask.sum().item(), device)
-            if self._cached_mask_key == mask_key and self._cached_block_mask is not None:
-                return self._cached_block_mask
-
             valid_q = full_mask.unsqueeze(-1)
             valid_kv = full_mask.unsqueeze(-2)
             mask_matrix = valid_q & valid_kv
@@ -412,12 +407,9 @@ class SigLino(nn.Module):
             ) -> torch.Tensor:
                 return mask_matrix[b, q_idx, kv_idx]
 
-            block_mask = create_attention_mask(
+            return create_attention_mask(
                 mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size)
             )
-            self._cached_block_mask = block_mask
-            self._cached_mask_key = mask_key
-            return block_mask
         else:
             return create_sdpa_attention_mask(full_mask)
 

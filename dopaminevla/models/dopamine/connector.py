@@ -125,11 +125,12 @@ class DopamineVLAPerceiverLayer(nn.Module):
 
 
 class DopamineVLAConnector(nn.Module):
-    """Multi-view Perceiver connector.
+    """Perceiver connector — compresses patch-level features into fixed-length latents.
 
-    Fuses an arbitrary number of visual-encoder views (original, left crop,
-    right crop, …) into exactly ``n_latents`` fixed-length tokens via
-    Perceiver-style cross-attention.
+    Accepts one or more view tensors (from a single or multi-view vision
+    encoder) and cross-attends learned ``n_latents`` queries into the
+    concatenated context.  Output shape is always
+    ``(B, n_latents, text_hidden_size)``, independent of input patch count.
 
     Parameters are read from the ``vision_connector_*`` fields of
     ``DopamineVLAConfig``.

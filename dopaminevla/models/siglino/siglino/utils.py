@@ -193,9 +193,9 @@ def load_siglino_model(
                 else:
                     print(
                         (
-                        f"Warning: No matching local config for "
-                        f"'{effective_ckpt}', using checkpoint metadata directly"
-                    )
+                            f"Warning: No matching local config for "
+                            f"'{effective_ckpt}', using checkpoint metadata directly"
+                        )
                     )
                     inferred_args = hub_args
             elif os.path.isfile(effective_ckpt):

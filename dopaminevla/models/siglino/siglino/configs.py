@@ -72,6 +72,9 @@ class SigLinoArgs:
     teachers: tuple[str, ...] = ("siglip2", "dinov3")
     teachers_dim: tuple[int, ...] = (1152, 1024)
 
+    # Weight initialisation
+    depth_init: bool = True  # scale init std by 1/(2*(layer+1))**0.5
+
     # FlexAttention
     use_flex_attn: bool = True
 

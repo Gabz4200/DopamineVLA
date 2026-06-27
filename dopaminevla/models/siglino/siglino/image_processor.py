@@ -76,15 +76,25 @@ def pad_along_first_dim(
     pad_value: float = 0.0,
     mask_dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pad the array along the first dimension and return mask."""
-    current_length = array.shape[0]
-    padding_length = target_length - current_length
-    mask = torch.ones(target_length, dtype=mask_dtype, device=array.device)
+    """Pad or truncate the array along the first dimension to target_length, return mask.
 
-    if padding_length > 0:
-        paddings = (0, 0, 0, padding_length)
-        array = torch.nn.functional.pad(array, paddings, mode="constant", value=pad_value)
-        mask[-padding_length:] = 0
+    Truncation preserves the first *target_length* entries (discards the tail),
+    so the caller should ensure target_length is at least as large as the expected
+    number of patches.  The mask is 1 for real data and 0 for padded positions.
+    """
+    current_length = array.shape[0]
+
+    if current_length > target_length:
+        # Truncate — keep only the first target_length entries
+        array = array[:target_length]
+        mask = torch.ones(target_length, dtype=mask_dtype, device=array.device)
+    else:
+        padding_length = target_length - current_length
+        mask = torch.ones(target_length, dtype=mask_dtype, device=array.device)
+        if padding_length > 0:
+            paddings = (0, 0, 0, padding_length)
+            array = torch.nn.functional.pad(array, paddings, mode="constant", value=pad_value)
+            mask[-padding_length:] = 0
 
     return array, mask
 

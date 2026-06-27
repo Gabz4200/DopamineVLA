@@ -381,7 +381,7 @@ class TestDopamineVLAForConditionalGeneration:
 
 
 class TestVisionTransformer:
-    """Direct tests for DopamineVLAVisionTransformer (multi-view encoder)."""
+    """Direct tests for DopamineVLAVisionTransformer (single-pass encoder)."""
 
     def test_forward_output_shape(self) -> None:
         config = _make_config()
@@ -389,15 +389,11 @@ class TestVisionTransformer:
         vt = DopamineVLAVisionTransformer(config.vision_config)
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
-        features, masks = vt(x)
-        # Returns (features_tuple, masks_tuple), each with 3 views
-        assert len(features) == 3
-        assert len(masks) == 3
-        for i, (f, m) in enumerate(zip(features, masks, strict=True)):
-            assert f.ndim == 3, f"View {i}: expected (B, L, D), got {f.shape}"
-            assert f.shape[0] == 1
-            assert f.shape[2] == config.vision_config.hidden_size
-            assert m.shape == f.shape[:2], f"Mask {i}: expected {f.shape[:2]}, got {m.shape}"
+        features, mask = vt(x)
+        assert features.ndim == 3, f"expected (B, L, D), got {features.shape}"
+        assert features.shape[0] == 1
+        assert features.shape[2] == config.vision_config.hidden_size
+        assert mask.shape == features.shape[:2], f"expected {features.shape[:2]}, got {mask.shape}"
 
     def test_forward_no_nan(self) -> None:
         config = _make_config()
@@ -406,28 +402,8 @@ class TestVisionTransformer:
         vt.eval()
         x = torch.randn(1, 3, 224, 224)
         features, _ = vt(x)
-        for i, v in enumerate(features):
-            assert not v.isnan().any(), f"View {i} has NaN"
-            assert not v.isinf().any(), f"View {i} has Inf"
-
-    def test_pre_process_views_split_dimensions(self) -> None:
-        """Verify that view splitting preserves channels and produces correct spatial sizes."""
-        config = _make_config()
-        assert isinstance(config.vision_config, DopamineVLAVisionConfig)
-        vt = DopamineVLAVisionTransformer(config.vision_config)
-        x = torch.randn(1, 3, 128, 256)  # wider than tall
-        pixel_views, mask_views = vt.pre_process_views(x)
-        assert len(pixel_views) == 3
-        assert len(mask_views) == 3
-        # Full view has original size
-        assert pixel_views[0].shape == x.shape
-        # Left crop is narrower than full
-        assert pixel_views[1].shape[-1] < pixel_views[0].shape[-1]
-        assert pixel_views[2].shape[-1] < pixel_views[0].shape[-1]
-        # All views have same batch, channel, height
-        assert pixel_views[1].shape[0] == 1
-        assert pixel_views[1].shape[1] == 3
-        assert pixel_views[1].shape[2] == 128
+        assert not features.isnan().any(), "Features have NaN"
+        assert not features.isinf().any(), "Features have Inf"
 
 
 # ---------------------------------------------------------------------------

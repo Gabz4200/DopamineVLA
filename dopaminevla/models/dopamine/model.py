@@ -107,14 +107,14 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
         patches_subgrid = patches_subgrid.unfold(dimension=2, size=patch_size, step=patch_size)
         patch_attention_mask = (patches_subgrid.sum(dim=(-1, -2)) > 0).bool()
 
-        # Vision model returns (features_tuple, masks_tuple), one per view.
-        view_hidden_states, view_masks = self.vision_model(
+        # Vision model returns single-view features + mask.
+        features, mask = self.vision_model(
             pixel_values=pixel_values,
             patch_attention_mask=patch_attention_mask,
         )
 
-        # Connector fuses views into fixed-length token set.
-        image_features = self.connector(view_hidden_states, attention_masks=view_masks)
+        # Connector compresses features into fixed-length token set.
+        image_features = self.connector((features,), attention_masks=(mask,))
         return image_features
 
     @can_return_tuple
