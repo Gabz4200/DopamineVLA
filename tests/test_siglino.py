@@ -207,7 +207,7 @@ class TestSigLinoHFModel:
         model = SigLinoHFModel(config)
         sd = model.state_dict()
         assert any(k.startswith("model.layers.") for k in sd.keys())
-        assert any(k.startswith("model.img_projector.") for k in sd.keys())
+        assert any(k.startswith("model.patch_embed.") for k in sd.keys())
         assert any(k.startswith("model.cls_token") for k in sd.keys())
 
     def test_from_pretrained_hub(self) -> None:
@@ -392,12 +392,7 @@ class TestLoadSiglinoModel:
 
 
 class TestDeviceAgnostic:
-    def test_flex_attn_disabled_on_cpu(self) -> None:
-        model = SigLino(siglino_configs["dense-30M"])
-        cpu = torch.device("cpu")
-        assert not model._use_flex_attn_on_device(cpu)
-
-    def test_compile_auto_disabled_on_cpu(self, dense_30m_args: SigLinoArgs) -> None:
+    def test_raw_image_forward(self, dense_30m_args: SigLinoArgs) -> None:
         model = SigLino(dense_30m_args)
         x = torch.randn(1, 3, 224, 224)
         out = model(pixel_values=x, spatial_shapes=torch.tensor([[14, 14]]))

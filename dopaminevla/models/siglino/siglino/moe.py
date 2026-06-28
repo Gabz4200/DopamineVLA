@@ -67,17 +67,24 @@ def _run_experts_for_loop(
     total_tokens = sum(num_tokens_list)
     num_padding = x.shape[0] - total_tokens
     x_splits = torch.split(x[:total_tokens], split_size_or_sections=num_tokens_list, dim=0)
-    out_splits = []
-    for expert_idx, x_expert in enumerate(x_splits):
-        if act == "relu2":
-            h = 2 * F.relu(torch.matmul(x_expert, w1[expert_idx].T)).square()
-        else:
-            h = F.silu(torch.matmul(x_expert, w1[expert_idx].T))
-        h = h * torch.matmul(x_expert, w3[expert_idx].T)
-        h = torch.matmul(h, w2[expert_idx].T)
-        out_splits.append(h)
 
-    out = torch.cat(out_splits, dim=0)
+    # Pad and stack for single batched matmul launch
+    stacked_x = torch.nn.utils.rnn.pad_sequence(
+        list(x_splits), batch_first=True
+    )  # (E, max_tokens, dim)
+
+    if act == "relu2":
+        h = 2 * F.relu(torch.bmm(stacked_x, w1.transpose(1, 2))).square()
+    else:
+        h = F.silu(torch.bmm(stacked_x, w1.transpose(1, 2)))
+    h = h * torch.bmm(stacked_x, w3.transpose(1, 2))
+    out = torch.bmm(h, w2.transpose(1, 2))  # (E, max_tokens, dim)
+
+    # Mask out padding tokens and flatten
+    max_tokens = stacked_x.shape[1]
+    arange = torch.arange(max_tokens, device=x.device)
+    mask = arange[None, :] < num_tokens_per_expert[:, None]  # (E, max_tokens)
+    out = out[mask]  # (total_tokens, dim)
     if num_padding > 0:
         out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
     return out
@@ -142,13 +149,10 @@ class TokenChoiceTopKRouter(nn.Module):
             top_scores = top_scores / (top_scores.sum(dim=-1, keepdim=True) + 1e-20)
         top_scores = top_scores * self.route_scale
 
-        num_tokens_per_expert = torch.histc(
-            selected_experts_indices.view(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
+        num_tokens_per_expert = torch.bincount(
+            selected_experts_indices.view(-1), minlength=self.num_experts
         )
-        return top_scores, selected_experts_indices, num_tokens_per_expert
+        return top_scores, selected_experts_indices, num_tokens_per_expert.to(torch.float32)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)

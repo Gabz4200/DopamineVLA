@@ -17,22 +17,14 @@
 # Main model implementation for Falcon Vision Encoder
 # A pure vision transformer distilled from DINOv3 and SigLIP2
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Self
 
-import einops as E
 import torch
 import torch.nn.functional as F
 from torch import nn
+from transformers.activations import ACT2FN
 
-from .attention import (
-    Attention,
-    BlockMask,
-    create_attention_mask,
-    create_sdpa_attention_mask,
-    device_supports_flex_attention,
-)
+from .attention import Attention, create_sdpa_attention_mask
 from .configs import SigLinoArgs
 from .moe import FeedForward, MoE
 from .rope import (
@@ -53,13 +45,12 @@ class SigLinoFeatures:
 class Siglip2MLP(nn.Module):
     def __init__(self, hidden_size: int, intermediate_size: int) -> None:
         super().__init__()
-        self.activation_fn = nn.GELU(approximate="tanh")
         self.fc1 = nn.Linear(hidden_size, intermediate_size)
         self.fc2 = nn.Linear(intermediate_size, hidden_size)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.fc1(hidden_states)
-        hidden_states = self.activation_fn(hidden_states)
+        hidden_states = ACT2FN["gelu_pytorch_tanh"](hidden_states)
         hidden_states = self.fc2(hidden_states)
         return hidden_states
 
@@ -82,7 +73,7 @@ class Siglip2MultiheadAttentionPoolingHead(nn.Module):
 
         # key_padding_mask: True = padding (masked out). attention_mask: True = valid.
         if attention_mask is not None:
-            attn = E.rearrange(attention_mask, "(b s) -> b s", b=batch_size)
+            attn = attention_mask.view(batch_size, -1)
             key_padding_mask = ~attn.bool()
         else:
             key_padding_mask = None
@@ -101,23 +92,27 @@ class Adapter(nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, out_dim)
-        self.norm = nn.LayerNorm(out_dim)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(out_dim, out_dim, bias=bias)
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.LayerNorm(out_dim),
+            nn.GELU(),
+            nn.Linear(out_dim, out_dim, bias=bias),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.norm(x)
-        x = self.act(x)
-        x = self.fc2(x)
-        return x
+        return self.net(x)
 
     def init_weights(self) -> None:
-        nn.init.trunc_normal_(self.fc1.weight, mean=0.0, std=0.01)
-        nn.init.trunc_normal_(self.fc2.weight, mean=0.0, std=0.01)
-        nn.init.zeros_(self.fc1.bias)
-        self.norm.reset_parameters()
+        w0 = self.net[0]
+        w3 = self.net[3]
+        b1 = self.net[1]
+        assert isinstance(w0, nn.Linear)
+        assert isinstance(w3, nn.Linear)
+        assert isinstance(b1, nn.LayerNorm)
+        nn.init.trunc_normal_(w0.weight, mean=0.0, std=0.01)
+        nn.init.trunc_normal_(w3.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(w0.bias)
+        b1.reset_parameters()
 
 
 class TransformerBlock(nn.Module):
@@ -137,7 +132,6 @@ class TransformerBlock(nn.Module):
             head_dim=args.head_dim,
             use_qk_norm=args.use_qk_norm,
             enable_3d_rope=args.enable_3d_rope,
-            use_flex_attn=args.use_flex_attn,
             use_sink_attn=True,  # Match torchtitan checkpoint
         )
 
@@ -165,8 +159,7 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         freqs_cis_2d: torch.Tensor | None = None,
         pos_thw: torch.Tensor | None = None,
-        attention_masks: BlockMask | torch.Tensor | None = None,
-        compile: bool = True,
+        attention_masks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         B, S, D = x.shape
         if self.parameterized_norm:
@@ -179,7 +172,6 @@ class TransformerBlock(nn.Module):
             freqs_cis_2d,
             pos_thw,
             attention_masks=attention_masks,
-            compile=compile,
         )
 
         if self.parameterized_norm:
@@ -215,10 +207,18 @@ class SigLino(nn.Module):
         self.patch_size = args.spatial_patch_size
         self.n_storage_tokens = args.n_storage_tokens
 
-        # Patch embedding
-        self.n_pixels_per_patch = args.temporal_patch_size * args.spatial_patch_size**2
+        # Patch embedding: Conv2d fuses unfold + projection for raw images
+        self.patch_embed = nn.Conv2d(
+            in_channels=args.channel_size,
+            out_channels=args.dim,
+            kernel_size=args.spatial_patch_size,
+            stride=args.spatial_patch_size,
+            bias=False,
+        )
+        # Projection for pre-patched features (from processor output)
+        n_pixels_per_patch = args.temporal_patch_size * args.spatial_patch_size**2
         self.img_projector = nn.Linear(
-            self.n_pixels_per_patch * args.channel_size,
+            n_pixels_per_patch * args.channel_size,
             args.dim,
             bias=False,
         )
@@ -278,50 +278,13 @@ class SigLino(nn.Module):
             args.n_heads, head_dim, args.rope_min_freqs, args.rope_max_freqs
         )
 
-    @torch.compiler.disable()
-    def _apply(self, fn: Callable[[torch.Tensor], torch.Tensor], recurse: bool = True) -> Self:
-        # Workaround to prevent casting complex RoPE buffers to real dtypes
-        # (which triggers a warning and discards the imaginary part).
-
-        # Identify complex buffers and remove them from standard application
-        complex_buffers = {}
-
-        # Iterate over a COPY of the items (or just keys) to avoid "dictionary changed size"
-        for name, buf in list(self.named_buffers(recurse=False)):
-            if buf is not None and buf.is_complex():
-                complex_buffers[name] = buf
-                del self._buffers[name]
-
-        # Apply fn (device/dtype moves) to the rest of the model
-        super()._apply(fn)
-
-        # Handle complex buffers manually
-        for name, buf in complex_buffers.items():
-            # Probe fn to see if it performs a destructive cast to real
-            dummy = torch.tensor([0.0], device=buf.device)
-            res = fn(dummy)
-
-            if not res.is_complex():
-                # fn casts to real (e.g. bfloat16).
-                # We should ONLY apply the device move, but keep the buffer complex.
-                new_buf = buf.to(device=res.device)
-            else:
-                # fn preserves complex or is casting to complex. Safe to apply.
-                new_buf = fn(buf)
-
-            # Restore buffer with original persistence setting
-            persistent = name not in self._non_persistent_buffers_set
-            self.register_buffer(name, new_buf, persistent=persistent)
-
-        return self
-
     def init_weights(self, buffer_device: torch.device | None = None) -> None:
         if self.freqs_cis is None:
             self._post_init()
         buffer_device = buffer_device or self.freqs_cis.device
 
-        if self.img_projector is not None:
-            nn.init.trunc_normal_(self.img_projector.weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.patch_embed.weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.img_projector.weight, mean=0.0, std=0.02)
         nn.init.normal_(self.cls_token, std=0.02)
         if self.n_storage_tokens > 0:
             nn.init.normal_(self.storage_tokens, std=0.02)
@@ -345,18 +308,14 @@ class SigLino(nn.Module):
         return next(self.dinov3_adapter.parameters()).device
 
     def _patchify(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Convert images to patches. Input: (N, C, H, W) or (N, H, W, C).
+        """Convert images to patches via Conv2d. Input: (N, C, H, W).
 
         If H or W are not divisible by ``patch_size``, the image is
         zero-padded to the next multiple so no trailing pixels are lost.
         """
-        if images.shape[-1] == 3:  # NHWC format
-            images = images.permute(0, 3, 1, 2)  # -> NCHW
-
         N, C, H, W = images.shape
         ph = pw = self.patch_size
 
-        # Pad to patch_size multiple — no cropping, no info loss
         pad_h = (ph - H % ph) % ph
         pad_w = (pw - W % pw) % pw
         if pad_h > 0 or pad_w > 0:
@@ -365,53 +324,22 @@ class SigLino(nn.Module):
             W += pad_w
 
         h, w = H // ph, W // pw
+        patches = self.patch_embed(images)  # (N, dim, h, w)
+        patches = patches.flatten(2).transpose(1, 2)  # (N, h*w, dim)
 
-        # Create patches
-        patches = images.unfold(2, ph, ph).unfold(3, pw, pw)
-        patches = patches.permute(0, 2, 3, 1, 4, 5)  # N, h, w, C, ph, pw
-        patches = patches.reshape(N, h * w, C * ph * pw)
-
-        # Create spatial shape tensor
         spatial_shape = torch.tensor([[h, w]] * N, device=images.device)
-
         return patches, spatial_shape
 
-    def _use_flex_attn_on_device(self, device: torch.device) -> bool:
-        return self.args.use_flex_attn and device_supports_flex_attention(device)
-
-    def _build_vision_mask(
-        self,
-        full_mask: torch.Tensor,
-        device: torch.device,
-        block_size: int = 64,
-    ) -> BlockMask | torch.Tensor:
-        """Build attention mask using the padding mask.
+    def _build_vision_mask(self, full_mask: torch.Tensor) -> torch.Tensor:
+        """Build SDPA attention mask from padding mask.
 
         Args:
             full_mask: (N, S) boolean mask where True = valid, False = padding
-            device: torch device
-            block_size: FlexAttention block size (only used for flex path)
 
         Returns:
-            _BlockMask for FlexAttention (CUDA) or 4D tensor mask (CPU)
+            4D attention mask tensor for SDPA
         """
-        N, S = full_mask.shape
-
-        if self._use_flex_attn_on_device(device):
-            valid_q = full_mask.unsqueeze(-1)
-            valid_kv = full_mask.unsqueeze(-2)
-            mask_matrix = valid_q & valid_kv
-
-            def mask_mod(
-                b: torch.Tensor, h: torch.Tensor, q_idx: torch.Tensor, kv_idx: torch.Tensor
-            ) -> torch.Tensor:
-                return mask_matrix[b, q_idx, kv_idx]
-
-            return create_attention_mask(
-                mask_mod, N, None, S, S, BLOCK_SIZE=(block_size, block_size)
-            )
-        else:
-            return create_sdpa_attention_mask(full_mask)
+        return create_sdpa_attention_mask(full_mask)
 
     def _get_thw_pos(
         self,
@@ -473,26 +401,21 @@ class SigLino(nn.Module):
         pixel_values: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         spatial_shapes: torch.Tensor | None = None,
-        compile: bool | None = None,
         output_hidden_states: bool = False,
     ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor | tuple[torch.Tensor, ...] | None]:
         """
         Forward pass for vision encoding.
 
         Args:
-            pixel_values: Image patches (N, L, C*patch_size^2) - patches only, no CLS/register
+            pixel_values: Image patches (N, L, dim) - patches only, no CLS/register
             padding_mask: (N, L) mask where 1 = valid patch, 0 = padding
             spatial_shapes: Shape of each image (N, 2) with (H_patches, W_patches)
-            compile: Whether to use compiled FlexAttention
 
         Returns:
             Dictionary with:
             - "output": patch features {"dinov3": ..., "siglip2": ..., "siglino": ...}
             - "summary": pooled features {"dinov3": ..., "siglip2": ..., "siglino": ...}
         """
-        # Auto-detect compile: enabled on CUDA, disabled on CPU
-        if compile is None:
-            compile = pixel_values.device.type == "cuda"
 
         # Handle raw images input
         if pixel_values.dim() == 4:
@@ -535,8 +458,11 @@ class SigLino(nn.Module):
         if padding_mask is None:
             padding_mask = torch.ones((N, L), dtype=torch.float32, device=device)
 
-        # Project patches
-        h_NLD = self.img_projector(pixel_values)
+        # Project patches from processor output to model dim (if not already projected)
+        if pixel_values.shape[-1] != self.args.dim:
+            h_NLD = self.img_projector(pixel_values)
+        else:
+            h_NLD = pixel_values
 
         # Add CLS and register tokens (these are always valid)
         cls_expanded = self.cls_token.expand(N, -1, -1)
@@ -554,12 +480,12 @@ class SigLino(nn.Module):
         full_mask_bool = full_mask.bool()
 
         # Build attention mask using padding mask
-        block_mask = self._build_vision_mask(full_mask_bool, device)
+        block_mask = self._build_vision_mask(full_mask_bool)
 
         # Compute 2D RoPE positions
         assert spatial_shapes is not None, "spatial_shapes must be provided for 2D RoPE"
         thw_pos = self._get_thw_pos(N, L, spatial_shapes, device)
-        pos_thw = E.rearrange(thw_pos, "p n s -> n s p").to(dtype=torch.float32)
+        pos_thw = thw_pos.permute(1, 2, 0).to(dtype=torch.float32)  # (3, N, S) -> (N, S, 3)
 
         # Mark CLS/register positions as NaN (no 2D RoPE for them)
         # Also mark padding positions as NaN
@@ -582,7 +508,6 @@ class SigLino(nn.Module):
                 freqs_cis_2d=freqs_cis_golden,
                 pos_thw=pos_thw,
                 attention_masks=block_mask,
-                compile=compile,
             )
             if all_hidden_states is not None:
                 all_hidden_states.append(h_NSD)
@@ -610,7 +535,7 @@ class SigLino(nn.Module):
         # SigLIP2 summary via attention pooling (uses full sequence with mask)
         h_sig = self.siglip2_adapter(h_NSD)
         # Pass the full mask for attention pooling
-        siglip_attn_mask = full_mask.reshape(-1)  # Flatten for pooling head
+        siglip_attn_mask = full_mask  # (N, S) 2D mask for pooling head
         student_summary_siglip = self.siglip2_multihead_attention_pooling_head(
             h_sig, siglip_attn_mask
         )

@@ -17,6 +17,7 @@
 from typing import Unpack
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
@@ -94,9 +95,16 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
             attn_mask = attn_mask[real_images_inds].contiguous()
 
         patch_size = self.config.vision_config.spatial_patch_size
-        patches_subgrid = attn_mask.unfold(dimension=1, size=patch_size, step=patch_size)
-        patches_subgrid = patches_subgrid.unfold(dimension=2, size=patch_size, step=patch_size)
-        patch_attention_mask = (patches_subgrid.sum(dim=(-1, -2)) > 0).bool()
+        # Check if any pixel in a patch is valid using max pooling.
+        patch_attention_mask = (
+            F.max_pool2d(
+                attn_mask.float().unsqueeze(1),
+                kernel_size=patch_size,
+                stride=patch_size,
+            )
+            .squeeze(1)
+            .bool()
+        )
 
         # Vision model returns tuple of features (one per selected layer) and masks.
         features, masks = self.vision_model(

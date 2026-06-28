@@ -14,7 +14,6 @@
 #
 # Edited by Gabriel Amaral
 
-import einops as E
 import torch
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,24 +22,23 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def precompute_freqs_cis(
     dim: int, end: int, theta: float = 10000.0, device: str = "cpu"
 ) -> torch.Tensor:
-    """Precompute frequency tensor for 1D rotary embeddings."""
+    """Precompute frequency tensor for 1D rotary embeddings (real-valued)."""
     _dev = device if device else DEVICE
     if end > 0:
         freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=_dev)[: (dim // 2)].float() / dim))
         t_cpu = torch.arange(end, device=_dev)
         freqs = torch.outer(t_cpu, freqs).float()
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-        return freqs_cis
+        # Return real-valued cos/sin instead of complex
+        return torch.stack([freqs.cos(), freqs.sin()], dim=-1)
     else:
-        return torch.tensor([], dtype=torch.complex64, device=_dev)
+        return torch.tensor([], dtype=torch.float32, device=_dev)
 
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    ndim = x.ndim
-    seqlen = x.shape[1]
-    freqs_cis = freqs_cis[:seqlen]
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """Rotate half the hidden dims of the input (HF-style real-valued RoPE)."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
 
 
 def apply_rotary_emb(
@@ -50,20 +48,31 @@ def apply_rotary_emb(
     pos_t: torch.Tensor | None = None,
     device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply rotary embeddings to query and key tensors."""
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-
+    """Apply rotary embeddings to query and key tensors (real-valued HF style)."""
+    # freqs_cis shape: (S_max, D, 2) where D is frequencies per position
+    # xq is (B, S, H, D) — need freqs to broadcast with S (dim 1) and D (dim 3)
     if freqs_cis.ndim == 3:
-        freqs_cis = freqs_cis.unsqueeze(-2)
+        if pos_t is not None:
+            # Index select relevant positions, add head dim
+            # (B, S, D, 2) -> (B, S, 1, D, 2)
+            freqs_cis = freqs_cis[pos_t.long()].unsqueeze(2)
+        else:
+            # Use full sequence, add batch and head dims
+            # (1, S, 1, D, 2)
+            freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(2)
     elif pos_t is not None:
-        # Keep all ops in real-land (no complex index/unsqueeze)
-        freqs_cis = torch.view_as_complex(torch.view_as_real(freqs_cis)[pos_t.long()].unsqueeze(-3))
-    else:
-        freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+        # Legacy fallback for 2D freqs_cis
+        freqs_cis = freqs_cis[pos_t.long()].unsqueeze(-3)
 
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    # (B/S, S, 1, D, 2) -> freqs_cis[..., 0] = (B/S, S, 1, D)
+    xq_cos = xq[..., : xq.shape[-1] // 2] * freqs_cis[..., 0]
+    xq_sin = rotate_half(xq[..., : xq.shape[-1] // 2]) * freqs_cis[..., 1]
+    xk_cos = xk[..., : xk.shape[-1] // 2] * freqs_cis[..., 0]
+    xk_sin = rotate_half(xk[..., : xk.shape[-1] // 2]) * freqs_cis[..., 1]
+
+    xq_out = torch.cat([xq_cos - xq_sin, xq[..., xq.shape[-1] // 2 :]], dim=-1)
+    xk_out = torch.cat([xk_cos - xk_sin, xk[..., xk.shape[-1] // 2 :]], dim=-1)
+
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
@@ -86,8 +95,8 @@ def apply_3d_rotary_emb(
         xq_hw = apply_golden_rotary_emb(xq_hw, freqs_cis_2d, pos_hw[..., 1:])
         xk_hw = apply_golden_rotary_emb(xk_hw, freqs_cis_2d, pos_hw[..., 1:])
 
-    xq_out = torch.concat([xq_t, xq_hw], dim=-1).type_as(xq)
-    xk_out = torch.concat([xk_t, xk_hw], dim=-1).type_as(xk)
+    xq_out = torch.cat([xq_t, xq_hw], dim=-1).type_as(xq)
+    xk_out = torch.cat([xk_t, xk_hw], dim=-1).type_as(xk)
     return xq_out, xk_out
 
 
@@ -100,11 +109,12 @@ def _phi(m: int, device: str = "cpu") -> float:
 
 def make_directions(n: int, d: int, device: str = "cpu") -> torch.Tensor:
     _dev = device if device else DEVICE
-    g = _phi(d)
-    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=_dev)
-    i = torch.arange(1, n + 1, dtype=torch.float64, device=_dev).unsqueeze(1)
-    z = torch.fmod(i * alpha, 1.0)
-    directions = torch.erfinv(2.0 * z - 1.0)
+    m = d // 2
+    phi_val = _phi(m)
+    v1 = torch.linspace(1, phi_val, steps=n, device=_dev)
+    z = 1 / (v1 + 1)
+    directions = torch.stack([z * torch.cos(z), z * torch.sin(z)], dim=1)
+    directions = torch.erfinv(2.0 * directions - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
     return directions.float()
 
@@ -118,11 +128,10 @@ def precompute_golden_freqs_cis(
     p_zero_freqs: float = 0.0,
     device: str = "cpu",
 ) -> torch.Tensor:
-    """Precompute golden ratio based 2D frequencies for vision tokens."""
+    """Precompute golden ratio based 2D frequencies for vision tokens (real-valued)."""
     n_freqs = head_dim // 2
     n_zero_freqs = round(p_zero_freqs * n_freqs)
 
-    # from Transformers from_pretrained(). register_buffer moves to correct device.
     _dev = device if device else DEVICE
     zeros = torch.zeros(n_zero_freqs, device=_dev)
 
@@ -140,11 +149,12 @@ def precompute_golden_freqs_cis(
 def apply_golden_freqs_cis_to_visual_pos(
     freqs_hFP: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu"
 ) -> torch.Tensor:
-    """Apply golden frequencies to visual positions."""
-    img_mask_BS = E.reduce(~torch.isnan(pos_BSP), "b s p -> b s", reduction="all")
+    """Apply golden frequencies to visual positions (real-valued)."""
+    img_mask_BS = ~(torch.isnan(pos_BSP).any(dim=-1))
     pos_tP = pos_BSP[img_mask_BS].float()
     theta_thF = torch.einsum("tp,hfp->thf", pos_tP, freqs_hFP.float())
-    return torch.polar(torch.ones_like(theta_thF.float()), theta_thF.float())
+    # Return real-valued (cos, sin) stacked
+    return torch.stack([theta_thF.cos(), theta_thF.sin()], dim=-1)
 
 
 def apply_golden_rotary_emb(
@@ -153,15 +163,32 @@ def apply_golden_rotary_emb(
     pos_BSP: torch.Tensor,
     device: str = "cpu",
 ) -> torch.Tensor:
-    """Apply golden rotary embedding to image tokens only."""
-    img_mask_BS = E.reduce(~torch.isnan(pos_BSP), "b s p -> b s", reduction="all")
+    """Apply golden rotary embedding to image tokens only (real-valued HF style)."""
+    img_mask_BS = ~(torch.isnan(pos_BSP).any(dim=-1))
     input_thd = input_BShd[img_mask_BS]
 
-    input_thd = torch.view_as_complex(
-        E.rearrange(input_thd.float(), "t h (d two) -> t h d two", two=2)
-    )
-    output_thd = input_thd * freqs_cis_thF
-    output_thd = torch.view_as_real(output_thd).flatten(-2).type_as(input_BShd)
+    # Input shape: (T, H, D) - need to split into two halves
+    dim = input_thd.shape[-1]
+    input_thd_1, input_thd_2 = input_thd[..., : dim // 2], input_thd[..., dim // 2 :]
 
-    img_mask_BS11 = E.rearrange(img_mask_BS, "b s -> b s 1 1")
-    return input_BShd.masked_scatter(img_mask_BS11, output_thd)
+    # Apply rotation: x * cos + rotate_half(x) * sin
+    cos_thF = freqs_cis_thF[..., 0]
+    sin_thF = freqs_cis_thF[..., 1]
+
+    # (T, H, D1) * (T, D2) with proper broadcasting
+    output_1 = input_thd_1 * cos_thF + rotate_half(input_thd_1) * sin_thF
+    output_2 = input_thd_2 * cos_thF + rotate_half(input_thd_2) * sin_thF
+
+    output_thd = torch.cat([output_1, output_2], dim=-1).type_as(input_BShd)
+
+    # Scatter back to original positions
+    img_mask_BS11 = img_mask_BS.unsqueeze(-1).unsqueeze(-1)
+    return input_BShd.masked_scatter(img_mask_BS11.expand(input_BShd.shape), output_thd)
+
+
+__all__ = [
+    "precompute_freqs_cis",
+    "precompute_golden_freqs_cis",
+    "apply_golden_freqs_cis_to_visual_pos",
+    "apply_3d_rotary_emb",
+]

@@ -71,7 +71,6 @@ class SigLinoConfig(PretrainedConfig):
         teachers: tuple[str, ...] = ("siglip2", "dinov3"),
         teachers_dim: tuple[int, ...] = (1152, 1024),
         depth_init: bool = True,
-        use_flex_attn: bool = True,
         **kwargs: Any,
     ) -> None:
         hidden_size = kwargs.pop("dim", hidden_size)
@@ -94,7 +93,6 @@ class SigLinoConfig(PretrainedConfig):
         parameterized_norm = kwargs.pop("parameterized_norm", parameterized_norm)
         n_storage_tokens = kwargs.pop("n_storage_tokens", n_storage_tokens)
         depth_init = kwargs.pop("depth_init", depth_init)
-        use_flex_attn = kwargs.pop("use_flex_attn", use_flex_attn)
         first_n_layers_dense = kwargs.pop("first_n_layers_dense", first_n_layers_dense)
         moe_dim = kwargs.pop("moe_dim", moe_dim)
         head_dim = kwargs.pop("head_dim", head_dim)
@@ -148,7 +146,6 @@ class SigLinoConfig(PretrainedConfig):
         self.teachers = list(teachers)
         self.teachers_dim = list(teachers_dim)
         self.depth_init = depth_init
-        self.use_flex_attn = use_flex_attn
         super().__init__(**kwargs)
 
     def to_siglino_args(self) -> SigLinoArgs:
@@ -189,7 +186,6 @@ class SigLinoConfig(PretrainedConfig):
             depth_init=self.depth_init,
             teachers=tuple(self.teachers),
             teachers_dim=tuple(self.teachers_dim),
-            use_flex_attn=self.use_flex_attn,
         )
 
     @classmethod
@@ -241,7 +237,6 @@ class SigLinoConfig(PretrainedConfig):
             depth_init=args.depth_init,
             teachers=args.teachers,
             teachers_dim=args.teachers_dim,
-            use_flex_attn=args.use_flex_attn,
             **kwargs,
         )
 
@@ -289,17 +284,15 @@ class SigLinoHFModel(SigLinoPreTrainedModel):
         output_hidden_states: bool = False,
         **kwargs: object,
     ) -> dict[str, dict[str, torch.Tensor] | torch.Tensor | tuple[torch.Tensor, ...] | None]:
-        compile_ = kwargs.pop("compile", None)
         return self.model(
             pixel_values=pixel_values,
             padding_mask=padding_mask,
             spatial_shapes=spatial_shapes,
-            compile=compile_,
             output_hidden_states=output_hidden_states,
         )
 
     def get_input_embeddings(self) -> torch.nn.Module:
-        return self.model.img_projector
+        return self.model.patch_embed
 
     def set_input_embeddings(self, value: torch.nn.Module) -> None:
-        self.model.img_projector = value  # pyrefly: ignore[bad-assignment]
+        self.model.patch_embed = value  # pyrefly: ignore[bad-assignment]

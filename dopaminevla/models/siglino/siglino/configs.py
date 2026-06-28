@@ -75,9 +75,6 @@ class SigLinoArgs:
     # Weight initialisation
     depth_init: bool = True  # scale init std by 1/(2*(layer+1))**0.5
 
-    # FlexAttention
-    use_flex_attn: bool = True
-
 
 # Pre-defined configurations
 siglino_configs = {
