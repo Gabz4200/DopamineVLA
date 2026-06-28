@@ -77,22 +77,26 @@ def _read_hub_config_args(hub_id: str) -> SigLinoArgs:
     return hf_config.to_siglino_args()
 
 
+# Fields identifying model architecture (used to match configs to checkpoints)
+_FIND_CONFIG_FIELDS = (
+    "dim",
+    "n_layers",
+    "n_heads",
+    "head_dim",
+    "n_kv_heads",
+    "moe_dim",
+    "first_n_layers_dense",
+    "ffn_dim",
+    "activation",
+    "spatial_patch_size",
+    "moe_args",
+)
+
+
 def _find_matching_config_name(args: SigLinoArgs) -> str | None:
     """Find a local config name whose SigLinoArgs matches the given args."""
     for name, candidate in siglino_configs.items():
-        if (
-            candidate.dim == args.dim
-            and candidate.n_layers == args.n_layers
-            and candidate.n_heads == args.n_heads
-            and candidate.head_dim == args.head_dim
-            and candidate.n_kv_heads == args.n_kv_heads
-            and candidate.moe_dim == args.moe_dim
-            and candidate.first_n_layers_dense == args.first_n_layers_dense
-            and candidate.ffn_dim == args.ffn_dim
-            and candidate.activation == args.activation
-            and candidate.spatial_patch_size == args.spatial_patch_size
-            and candidate.moe_args == args.moe_args
-        ):
+        if all(getattr(candidate, f) == getattr(args, f) for f in _FIND_CONFIG_FIELDS):
             return name
     return None
 
@@ -192,10 +196,8 @@ def load_siglino_model(
                     effective_config = match
                 else:
                     print(
-                        (
-                            f"Warning: No matching local config for "
-                            f"'{effective_ckpt}', using checkpoint metadata directly"
-                        )
+                        f"Warning: No matching local config for "
+                        f"'{effective_ckpt}', using checkpoint metadata directly"
                     )
                     inferred_args = hub_args
             elif os.path.isfile(effective_ckpt):
@@ -248,18 +250,62 @@ def load_siglino_model(
     # Load checkpoint weights (None = random init)
     if checkpoint_path is not None:
         state_dict = _load_state_dict(checkpoint_path)
+        state_dict = _remap_old_state_dict(state_dict, args)
         model.load_state_dict(state_dict)
 
-    if dtype is None:
-        model = model.to(device=device)
-    else:
-        model = model.to(device=device, dtype=dtype)
+    model = model.to(device=device, dtype=dtype)
     model.eval()
 
     # Create image processor
     image_processor = SigLinoImageProcessor(patch_size=args.spatial_patch_size, **kwargs)
 
     return model, image_processor
+
+
+def _remap_old_state_dict(
+    state_dict: dict[str, torch.Tensor], args: SigLinoArgs
+) -> dict[str, torch.Tensor]:
+    """Remap old-format parameter names to current format.
+
+    Old adapter keys (``fc1``/``norm``/``fc2``) are mapped to
+    ``net.0``/``net.1``/``net.3``, and ``patch_embed.weight`` is
+    synthesised from ``img_projector.weight`` (Linear to Conv2D reshape)
+    when not present in the checkpoint.
+    """
+    # Synthesize patch_embed.weight from img_projector.weight if missing
+    if "patch_embed.weight" not in state_dict:
+        proj = state_dict.get("img_projector.weight")
+        if proj is not None:
+            C = args.channel_size
+            ph = pw = args.spatial_patch_size
+            print("Checkpoint has no patch_embed.weight — synthesising from img_projector.weight")
+            state_dict["patch_embed.weight"] = proj.view(-1, C, ph, pw)
+
+    # Check for old-format adapter keys
+    adapter_prefixes = ("dinov3_adapter", "siglip2_adapter")
+    old_suffixes = (".fc1.", ".norm.", ".fc2.")
+    for key in state_dict:
+        if not any(key.startswith(p + ".") for p in adapter_prefixes):
+            continue
+        if any(suf in key for suf in old_suffixes):
+            break
+    else:
+        return state_dict  # No old-format keys found
+
+    print("Remapping old-format adapter keys (fc1/norm/fc2 → net.0/net.1/net.3)")
+    adapt_map = {"fc1": "net.0", "norm": "net.1", "fc2": "net.3"}
+    remapped: dict[str, torch.Tensor] = {}
+    for key, tensor in state_dict.items():
+        new_key = key
+        for prefix in adapter_prefixes:
+            if key.startswith(prefix + "."):
+                rest = key[len(prefix) + 1 :]
+                base = rest.split(".", 1)[0]
+                if base in adapt_map:
+                    new_key = f"{prefix}.{adapt_map[base]}{rest[len(base) :]}"
+                break
+        remapped[new_key] = tensor
+    return remapped
 
 
 _M = TypeVar("_M", bound=torch.nn.Module)
