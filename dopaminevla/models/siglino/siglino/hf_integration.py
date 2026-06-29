@@ -96,10 +96,8 @@ class SigLinoConfig(PretrainedConfig):
         first_n_layers_dense = kwargs.pop("first_n_layers_dense", first_n_layers_dense)
         moe_dim = kwargs.pop("moe_dim", moe_dim)
         head_dim = kwargs.pop("head_dim", head_dim)
-        if "teachers" in kwargs:
-            teachers = kwargs.pop("teachers")
-        if "teachers_dim" in kwargs:
-            teachers_dim = kwargs.pop("teachers_dim")
+        teachers = kwargs.pop("teachers", teachers)
+        teachers_dim = kwargs.pop("teachers_dim", teachers_dim)
         if "moe_args" in kwargs:
             moe_dict = kwargs.pop("moe_args")
             if isinstance(moe_dict, dict):

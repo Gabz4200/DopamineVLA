@@ -50,13 +50,11 @@ def _is_hub_id(path: str) -> bool:
 
 def _download_hub_checkpoint(hub_id: str) -> str:
     """Download a hub model checkpoint and return the local path."""
-    from huggingface_hub import hf_hub_download  # already a transitive dep
+    from huggingface_hub import file_exists, hf_hub_download  # already transitive deps
 
     for filename in ("model.safetensors", "pytorch_model.bin"):
-        try:
+        if file_exists(repo_id=hub_id, filename=filename):
             return hf_hub_download(repo_id=hub_id, filename=filename)
-        except Exception:
-            continue
     raise FileNotFoundError(f"No checkpoint file (safetensors or bin) found for {hub_id}")
 
 
@@ -284,13 +282,13 @@ def _remap_old_state_dict(
     # Check for old-format adapter keys
     adapter_prefixes = ("dinov3_adapter", "siglip2_adapter")
     old_suffixes = (".fc1.", ".norm.", ".fc2.")
-    for key in state_dict:
-        if not any(key.startswith(p + ".") for p in adapter_prefixes):
-            continue
-        if any(suf in key for suf in old_suffixes):
-            break
-    else:
-        return state_dict  # No old-format keys found
+    has_old_keys = any(
+        key.startswith(p + ".") and any(suf in key for suf in old_suffixes)
+        for key in state_dict
+        for p in adapter_prefixes
+    )
+    if not has_old_keys:
+        return state_dict
 
     print("Remapping old-format adapter keys (fc1/norm/fc2 → net.0/net.1/net.3)")
     adapt_map = {"fc1": "net.0", "norm": "net.1", "fc2": "net.3"}
@@ -313,13 +311,14 @@ _M = TypeVar("_M", bound=torch.nn.Module)
 
 def quantize_cpu_model(model: _M) -> _M:
     """Apply torchao INT8 dynamic quantization for CPU inference."""
-    try:
-        from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    import importlib
 
-        quantize_(model, Int8DynamicActivationInt8WeightConfig())
-        print("Applied torchao INT8 dynamic quantization for CPU")
-    except ImportError:
+    if importlib.util.find_spec("torchao") is None:
         print("torchao not available, skipping CPU quantization")
-    except Exception as e:
-        print(f"CPU quantization failed ({e}), running unquantized")
+        return model
+
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    quantize_(model, Int8DynamicActivationInt8WeightConfig())
+    print("Applied torchao INT8 dynamic quantization for CPU")
     return model

@@ -185,12 +185,10 @@ class TransformerBlock(nn.Module):
 
         return out
 
-    def init_weights(self, buffer_device: torch.device | None = None) -> None:
-        if buffer_device is None:
-            buffer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def init_weights(self) -> None:
         self.attention.init_weights(self.weight_init_std)
         if self.moe_enabled:
-            self.moe.init_weights(self.weight_init_std, buffer_device)
+            self.moe.init_weights(self.weight_init_std)
         else:
             self.feed_forward.init_weights(self.weight_init_std)
 
@@ -240,10 +238,10 @@ class SigLino(nn.Module):
 
         self.norm = nn.RMSNorm(args.dim, eps=args.norm_eps)
 
-        # Teacher adapters
-        self.teachers: dict[str, int] = dict(zip(args.teachers, args.teachers_dim))
-        dinov3_dim = self.teachers.get("dinov3", 1280)
-        siglip2_dim = self.teachers.get("siglip2", 1152)
+        # Teacher adapters — local lookup, never stored on model instance
+        teacher_dims = dict(zip(args.teachers, args.teachers_dim))
+        dinov3_dim = teacher_dims.get("dinov3", 1280)
+        siglip2_dim = teacher_dims.get("siglip2", 1152)
 
         self.dinov3_adapter = Adapter(args.dim, dinov3_dim, bias=False)
         self.siglip2_adapter = Adapter(args.dim, siglip2_dim, bias=False)
@@ -278,10 +276,9 @@ class SigLino(nn.Module):
             args.n_heads, head_dim, args.rope_min_freqs, args.rope_max_freqs
         )
 
-    def init_weights(self, buffer_device: torch.device | None = None) -> None:
+    def init_weights(self) -> None:
         if self.freqs_cis is None:
             self._post_init()
-        buffer_device = buffer_device or self.freqs_cis.device
 
         nn.init.trunc_normal_(self.patch_embed.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.img_projector.weight, mean=0.0, std=0.02)
@@ -293,7 +290,7 @@ class SigLino(nn.Module):
             assert isinstance(
                 layer, TransformerBlock
             )  # Makes pyrefly happy and it doesnt yell at me
-            layer.init_weights(buffer_device=buffer_device)
+            layer.init_weights()
 
         self.norm.reset_parameters()
         self.dinov3_adapter.init_weights()

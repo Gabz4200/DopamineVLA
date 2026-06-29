@@ -32,7 +32,6 @@ class MoEArgs:
     route_scale: float = 1.0
     score_before_experts: bool = True
     top_k: int = 1
-    use_grouped_mm: bool = False  # disabled by default for compatibility
     activation: Literal["silu", "relu2"] = "silu"
 
 
@@ -139,10 +138,8 @@ class TokenChoiceTopKRouter(nn.Module):
         else:
             scores = F.softmax(scores.float(), dim=1)
 
-        if expert_bias is not None:
-            _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
-        else:
-            _, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
+        routing_scores = scores + expert_bias if expert_bias is not None else scores
+        _, selected_experts_indices = torch.topk(routing_scores, k=self.top_k, dim=1)
 
         top_scores = scores.gather(dim=1, index=selected_experts_indices)
         if self.route_norm:
@@ -229,9 +226,7 @@ class MoE(nn.Module):
         out = out.scatter_add(dim=0, index=token_indices_expanded, src=routed_output)
         return out.view(bs, slen, dim)
 
-    def init_weights(self, init_std: float, buffer_device: torch.device | None = None) -> None:
-        if buffer_device is None:
-            buffer_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def init_weights(self, init_std: float) -> None:
         self.experts.init_weights(init_std)
         self.router.init_weights(init_std)
         if self.shared_experts is not None:
