@@ -417,13 +417,11 @@ class TestQuantizeCPU:
 
     def test_quantize_cpu_model_does_not_crash(self, dense_30m_args: SigLinoArgs) -> None:
         """Apply torchao quantize to a small model; verify it still runs."""
+        pytest.importorskip("torchao")
         model = SigLino(dense_30m_args)
         model.init_weights()
         model.eval()
-        try:
-            quantize_cpu_model(model)
-        except Exception as e:
-            pytest.skip(f"torchao quantize not supported in this env: {e}")
+        quantize_cpu_model(model)
 
         out = model(
             pixel_values=torch.randn(1, 3, 224, 224), spatial_shapes=torch.tensor([[14, 14]])
