@@ -310,19 +310,14 @@ class SigLino(nn.Module):
     def _patchify(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Convert images to patches via Conv2d. Input: (N, C, H, W).
 
-        If H or W are not divisible by ``patch_size``, the image is
-        zero-padded to the next multiple so no trailing pixels are lost.
+        Truncates trailing pixels if H or W are not divisible by
+        ``patch_size`` — the ``smart_resize`` in the processor always
+        produces dimensions divisible by patch_size, so no pixels are
+        lost in normal usage. This matches the paper's approach of
+        processing images at any native resolution without padding.
         """
         N, C, H, W = images.shape
         ph = pw = self.patch_size
-
-        pad_h = (ph - H % ph) % ph
-        pad_w = (pw - W % pw) % pw
-        if pad_h > 0 or pad_w > 0:
-            images = F.pad(images, (0, pad_w, 0, pad_h))
-            H += pad_h
-            W += pad_w
-
         h, w = H // ph, W // pw
         patches = self.patch_embed(images)  # (N, dim, h, w)
         patches = patches.flatten(2).transpose(1, 2)  # (N, h*w, dim)
@@ -417,38 +412,12 @@ class SigLino(nn.Module):
             - "summary": pooled features {"dinov3": ..., "siglip2": ..., "siglino": ...}
         """
 
-        # Handle raw images input
+        # Handle raw images input (processor handles resize; _patchify truncates to divisible)
         if pixel_values.dim() == 4:
-            # Save pre-padding mask and shapes before _patchify overwrites spatial_shapes
-            _pre_padding_mask = padding_mask
-            _pre_spatial_shapes = spatial_shapes
-
             pixel_values, spatial_shapes = self._patchify(pixel_values)
             N, L, _ = pixel_values.shape
-
-            if _pre_padding_mask is not None and _pre_spatial_shapes is not None:
-                # Pad mask from pre-padding grid to post-padding grid.
-                # Pre-padding mask: (N, H_old*W_old) from _forward_branch
-                # Post-padding spatial_shapes: (N, 2) with [H_new, W_new]
-                h_old, w_old = (
-                    _pre_spatial_shapes[0, 0].item(),
-                    _pre_spatial_shapes[0, 1].item(),
-                )
-                h_new, w_new = (
-                    spatial_shapes[0, 0].item(),
-                    spatial_shapes[0, 1].item(),
-                )
-                old_mask = _pre_padding_mask.view(N, int(h_old), int(w_old))  # (N, H_old, W_old)
-                pad_right = int(w_new - w_old)
-                pad_bottom = int(h_new - h_old)
-                if pad_right > 0 or pad_bottom > 0:
-                    padding_mask = F.pad(old_mask, (0, pad_right, 0, pad_bottom), value=0.0)
-                else:
-                    padding_mask = old_mask
-                padding_mask = padding_mask.reshape(N, -1).to(dtype=torch.float32)
-            else:
-                # No input mask — all patches are valid
-                padding_mask = torch.ones((N, L), dtype=torch.float32, device=pixel_values.device)
+            # All patches from raw image are valid
+            padding_mask = torch.ones((N, L), dtype=torch.float32, device=pixel_values.device)
 
         N, L, _ = pixel_values.shape
         device = pixel_values.device

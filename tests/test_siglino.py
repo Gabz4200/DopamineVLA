@@ -531,39 +531,35 @@ class TestSigLinoEdgeCases:
         assert not feats.isnan().any()
         assert not feats.isinf().any()
 
-    def test_non_divisible_dimensions_padded(self) -> None:
-        """Images with H,W not divisible by patch_size are padded, not cropped.
+    def test_non_divisible_dimensions_truncated(self) -> None:
+        """Images with H,W not divisible by patch_size are truncated, not padded.
 
-        Previously ``_patchify`` used ``unfold`` which silently dropped trailing
-        pixels.  Now H/W are padded to the next multiple of 16 before unfolding.
-        The number of output patches must reflect the **padded** dimensions.
+        The paper processes images at native resolution via ``smart_resize`` which
+        ensures divisibility. For direct raw-image input, trailing pixels are
+        truncated to maintain native-resolution processing without image padding.
         """
         model = self._create_model()
-        # H=100, W=100 — neither divisible by 16.  unfold(2,16,16) would cover
-        # only 96 px (6 patches); pixels 96-99 are dropped without padding.
-        # After padding: H=112, W=112 → 7×7 = 49 patches.
         n_reg = model.n_storage_tokens
         x = torch.randn(1, 3, 100, 100)
         out = model(pixel_values=x)
         feats = out["patch_features"]["siglino"]
-        # 112/16=7 → 7*7=49 patches (not 6*6=36 which would indicate cropping) + registers
-        assert feats.shape[1] == 7 * 7 + n_reg, (
-            f"Expected {7 * 7 + n_reg} (patches+registers), got {feats.shape[1]}"
+        # 100//16=6 → 6*6=36 patches + registers
+        assert feats.shape[1] == 6 * 6 + n_reg, (
+            f"Expected {6 * 6 + n_reg} (patches+registers), got {feats.shape[1]}"
         )
         assert not feats.isnan().any()
         assert not feats.isinf().any()
 
     def test_multiple_non_divisible_batch(self) -> None:
-        """Batch of images with non-divisible dimensions — all padded consistently."""
+        """Batch of images with non-divisible dimensions — all truncated consistently."""
         model = self._create_model()
         n_reg = model.n_storage_tokens
-        # Different padding requirements per dim but same H,W within batch:
-        # H=101, W=99 → pad to 112, 112 → 7*7=49 patches
+        # H=101, W=99 → 101//16=6, 99//16=6 → 6*6=36 patches
         x = torch.randn(2, 3, 101, 99)
         out = model(pixel_values=x)
         feats = out["patch_features"]["siglino"]
         assert feats.shape[0] == 2
-        assert feats.shape[1] == 7 * 7 + n_reg, (
-            f"Expected {7 * 7 + n_reg} (patches+registers), got {feats.shape[1]}"
+        assert feats.shape[1] == 6 * 6 + n_reg, (
+            f"Expected {6 * 6 + n_reg} (patches+registers), got {feats.shape[1]}"
         )
         assert not feats.isnan().any()

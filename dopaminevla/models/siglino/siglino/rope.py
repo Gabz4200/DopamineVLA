@@ -108,13 +108,18 @@ def _phi(m: int, device: str = "cpu") -> float:
 
 
 def make_directions(n: int, d: int, device: str = "cpu") -> torch.Tensor:
+    """Create 2D directions using golden-ratio low-discrepancy sequence.
+
+    Uses the plastic constant (phi(d)) to create quasi-random 2D directions
+    via fractional parts of a geometric sequence, then maps through erfinv
+    to approximate a normal distribution on the unit circle.
+    """
     _dev = device if device else DEVICE
-    m = d // 2
-    phi_val = _phi(m)
-    v1 = torch.linspace(1, phi_val, steps=n, device=_dev)
-    z = 1 / (v1 + 1)
-    directions = torch.stack([z * torch.cos(z), z * torch.sin(z)], dim=1)
-    directions = torch.erfinv(2.0 * directions - 1.0)
+    g = _phi(d)
+    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=_dev)
+    i = torch.arange(1, n + 1, dtype=torch.float64, device=_dev).unsqueeze(1)
+    z = torch.fmod(i * alpha, 1.0)
+    directions = torch.erfinv(2.0 * z - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
     return directions.float()
 
