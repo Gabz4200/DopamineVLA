@@ -14,31 +14,32 @@
 #
 # Edited by Gabriel Amaral
 
-import torch
+# RoPE (Rotary Position Embedding) implementation for Falcon Vision
+# Includes 1D RoPE and 2D Golden RoPE for vision tokens.
+#
+# Rotation is implemented via complex multiplication (view_as_complex / polar /
+# view_as_real), which exactly matches the original implementation and works
+# identically on CPU and CUDA.  The interleaved-pair layout used here
+# (pairs [x0,x1], [x2,x3], …) is required for weight compatibility.
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import torch
 
 
 def precompute_freqs_cis(
     dim: int, end: int, theta: float = 10000.0, device: str = "cpu"
 ) -> torch.Tensor:
-    """Precompute frequency tensor for 1D rotary embeddings (real-valued)."""
-    _dev = device if device else DEVICE
+    """Precompute 1D RoPE frequency tensor as complex exponentials.
+
+    Returns a complex tensor of shape (end, dim // 2) where each entry
+    e^{i*theta_k} encodes the rotation for frequency k at each position.
+    """
     if end > 0:
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=_dev)[: (dim // 2)].float() / dim))
-        t_cpu = torch.arange(end, device=_dev)
-        freqs = torch.outer(t_cpu, freqs).float()
-        # Return real-valued cos/sin instead of complex
-        return torch.stack([freqs.cos(), freqs.sin()], dim=-1)
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=device).float() / dim))
+        t = torch.arange(end, device=device)
+        freqs = torch.outer(t, freqs).float()
+        return torch.polar(torch.ones_like(freqs), freqs)  # (end, dim//2) complex
     else:
-        return torch.tensor([], dtype=torch.float32, device=_dev)
-
-
-def rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Rotate half the hidden dims of the input (HF-style real-valued RoPE)."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
+        return torch.zeros(0, dtype=torch.complex64, device=device)
 
 
 def apply_rotary_emb(
@@ -46,33 +47,27 @@ def apply_rotary_emb(
     xk: torch.Tensor,
     freqs_cis: torch.Tensor,
     pos_t: torch.Tensor | None = None,
-    device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply rotary embeddings to query and key tensors (real-valued HF style)."""
-    # freqs_cis shape: (S_max, D, 2) where D is frequencies per position
-    # xq is (B, S, H, D) — need freqs to broadcast with S (dim 1) and D (dim 3)
-    if freqs_cis.ndim == 3:
-        if pos_t is not None:
-            # Index select relevant positions, add head dim
-            # (B, S, D, 2) -> (B, S, 1, D, 2)
-            freqs_cis = freqs_cis[pos_t.long()].unsqueeze(2)
-        else:
-            # Use full sequence, add batch and head dims
-            # (1, S, 1, D, 2)
-            freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(2)
-    elif pos_t is not None:
-        # Legacy fallback for 2D freqs_cis
-        freqs_cis = freqs_cis[pos_t.long()].unsqueeze(-3)
+    """Apply 1D rotary embeddings via complex multiplication.
 
-    # (B/S, S, 1, D, 2) -> freqs_cis[..., 0] = (B/S, S, 1, D)
-    xq_cos = xq[..., : xq.shape[-1] // 2] * freqs_cis[..., 0]
-    xq_sin = rotate_half(xq[..., : xq.shape[-1] // 2]) * freqs_cis[..., 1]
-    xk_cos = xk[..., : xk.shape[-1] // 2] * freqs_cis[..., 0]
-    xk_sin = rotate_half(xk[..., : xk.shape[-1] // 2]) * freqs_cis[..., 1]
+    Exactly matches the original implementation: reshapes input into
+    interleaved pairs, multiplies by the complex frequency tensor, and
+    reshapes back.  Works on CPU and CUDA.
+    """
+    # (B, S, H, D) -> (B, S, H, D/2) complex  [interleaved pairs]
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
 
-    xq_out = torch.cat([xq_cos - xq_sin, xq[..., xq.shape[-1] // 2 :]], dim=-1)
-    xk_out = torch.cat([xk_cos - xk_sin, xk[..., xk.shape[-1] // 2 :]], dim=-1)
+    # freqs_cis: (S, D/2) complex
+    if pos_t is not None:
+        # pos_t: (B, S) -> index freqs -> (B, S, D/2) -> add head dim -> (B, S, 1, D/2)
+        freqs = freqs_cis[pos_t.long()].unsqueeze(-2)
+    else:
+        # (S, D/2) -> (1, S, 1, D/2) to broadcast over batch and heads
+        freqs = freqs_cis.unsqueeze(0).unsqueeze(-2)
 
+    xq_out = torch.view_as_real(xq_ * freqs).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
@@ -82,13 +77,12 @@ def apply_3d_rotary_emb(
     freqs_cis: torch.Tensor,
     freqs_cis_2d: torch.Tensor | None,
     pos_hw: torch.Tensor | None,
-    device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply 3D rotary embeddings (1D temporal + 2D spatial)."""
+    """Apply 3D rotary embeddings: 1D temporal RoPE + 2D spatial Golden RoPE."""
     xq_t, xq_hw = xq.chunk(chunks=2, dim=-1)
     xk_t, xk_hw = xk.chunk(chunks=2, dim=-1)
 
-    pos_t = pos_hw[:, :, 0].clone() if pos_hw is not None else None
+    pos_t = pos_hw[:, :, 0] if pos_hw is not None else None
     xq_t, xk_t = apply_rotary_emb(xq_t, xk_t, freqs_cis, pos_t=pos_t)
 
     if freqs_cis_2d is not None and pos_hw is not None:
@@ -100,7 +94,7 @@ def apply_3d_rotary_emb(
     return xq_out, xk_out
 
 
-def _phi(m: int, device: str = "cpu") -> float:
+def _phi(m: int) -> float:
     x = 2.0
     for _ in range(10):
         x = (1 + x) ** (1.0 / (m + 1.0))
@@ -114,10 +108,9 @@ def make_directions(n: int, d: int, device: str = "cpu") -> torch.Tensor:
     via fractional parts of a geometric sequence, then maps through erfinv
     to approximate a normal distribution on the unit circle.
     """
-    _dev = device if device else DEVICE
     g = _phi(d)
-    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=_dev)
-    i = torch.arange(1, n + 1, dtype=torch.float64, device=_dev).unsqueeze(1)
+    alpha = (1.0 / g) ** torch.arange(1, d + 1, dtype=torch.float64, device=device)
+    i = torch.arange(1, n + 1, dtype=torch.float64, device=device).unsqueeze(1)
     z = torch.fmod(i * alpha, 1.0)
     directions = torch.erfinv(2.0 * z - 1.0)
     directions = directions / directions.norm(dim=1, keepdim=True)
@@ -133,60 +126,61 @@ def precompute_golden_freqs_cis(
     p_zero_freqs: float = 0.0,
     device: str = "cpu",
 ) -> torch.Tensor:
-    """Precompute golden ratio based 2D frequencies for vision tokens (real-valued)."""
+    """Precompute golden ratio based 2D frequency directions for vision tokens.
+
+    Returns a real tensor of shape (n_heads, head_dim // 2, pos_dim) — the
+    direction × frequency product used to compute per-position phase angles.
+    """
     n_freqs = head_dim // 2
     n_zero_freqs = round(p_zero_freqs * n_freqs)
 
-    _dev = device if device else DEVICE
-    zeros = torch.zeros(n_zero_freqs, device=_dev)
+    zeros = torch.zeros(n_zero_freqs, device=device)
 
     if n_freqs - n_zero_freqs > 0:
-        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device=_dev)
+        linspace_vals = torch.linspace(0, 1, n_freqs - n_zero_freqs, device=device)
         scaled_vals = min_freq * (max_freq / min_freq) ** linspace_vals
         omega_F = torch.cat((zeros, scaled_vals))
     else:
         omega_F = zeros
 
-    directions_hFP = make_directions(n_heads * n_freqs, pos_dim).reshape(n_heads, n_freqs, pos_dim)
+    directions_hFP = make_directions(n_heads * n_freqs, pos_dim, device=device).reshape(
+        n_heads, n_freqs, pos_dim
+    )
     return directions_hFP * omega_F.reshape(n_freqs, 1)
 
 
 def apply_golden_freqs_cis_to_visual_pos(
-    freqs_hFP: torch.Tensor, pos_BSP: torch.Tensor, device: str = "cpu"
+    freqs_hFP: torch.Tensor, pos_BSP: torch.Tensor
 ) -> torch.Tensor:
-    """Apply golden frequencies to visual positions (real-valued)."""
-    img_mask_BS = ~(torch.isnan(pos_BSP).any(dim=-1))
+    """Compute complex golden RoPE frequencies for the valid visual positions.
+
+    Returns a complex tensor of shape (T, H, F) — one complex rotation per
+    (token, head, frequency) triplet, where T = number of valid (non-NaN) tokens.
+    """
+    img_mask_BS = (~torch.isnan(pos_BSP)).all(dim=-1)
     pos_tP = pos_BSP[img_mask_BS].float()
     theta_thF = torch.einsum("tp,hfp->thf", pos_tP, freqs_hFP.float())
-    # Return real-valued (cos, sin) stacked
-    return torch.stack([theta_thF.cos(), theta_thF.sin()], dim=-1)
+    return torch.polar(torch.ones_like(theta_thF), theta_thF)  # (T, H, F) complex
 
 
 def apply_golden_rotary_emb(
     input_BShd: torch.Tensor,
     freqs_cis_thF: torch.Tensor,
     pos_BSP: torch.Tensor,
-    device: str = "cpu",
 ) -> torch.Tensor:
-    """Apply golden rotary embedding to image tokens only (real-valued HF style)."""
-    img_mask_BS = ~(torch.isnan(pos_BSP).any(dim=-1))
-    input_thd = input_BShd[img_mask_BS]
+    """Apply golden rotary embedding to image tokens only via complex multiplication.
 
-    # Input shape: (T, H, D) - need to split into two halves
-    dim = input_thd.shape[-1]
-    input_thd_1, input_thd_2 = input_thd[..., : dim // 2], input_thd[..., dim // 2 :]
+    Exactly matches the original: gathers valid (non-NaN) tokens, converts to
+    interleaved-pair complex, multiplies by the complex frequency tensor, and
+    scatters the result back.  Works on CPU and CUDA.
+    """
+    img_mask_BS = (~torch.isnan(pos_BSP)).all(dim=-1)
+    input_thd = input_BShd[img_mask_BS]  # (T, H, D)
 
-    # Apply rotation: x * cos + rotate_half(x) * sin
-    cos_thF = freqs_cis_thF[..., 0]
-    sin_thF = freqs_cis_thF[..., 1]
+    # (T, H, D) -> (T, H, D/2) complex via interleaved pairs
+    input_thd_c = torch.view_as_complex(input_thd.float().reshape(*input_thd.shape[:-1], -1, 2))
+    output_thd = torch.view_as_real(input_thd_c * freqs_cis_thF).flatten(-2).type_as(input_BShd)
 
-    # (T, H, D1) * (T, D2) with proper broadcasting
-    output_1 = input_thd_1 * cos_thF + rotate_half(input_thd_1) * sin_thF
-    output_2 = input_thd_2 * cos_thF + rotate_half(input_thd_2) * sin_thF
-
-    output_thd = torch.cat([output_1, output_2], dim=-1).type_as(input_BShd)
-
-    # Scatter back to original positions
     img_mask_BS11 = img_mask_BS.unsqueeze(-1).unsqueeze(-1)
     return input_BShd.masked_scatter(img_mask_BS11.expand(input_BShd.shape), output_thd)
 
