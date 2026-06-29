@@ -87,22 +87,18 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
             pixel_values=pixel_values,
             padding_mask=padding_mask.reshape(b, -1) if padding_mask is not None else None,
             spatial_shapes=torch.tensor(
-                [[h // self.patch_size, w // self.patch_size]] * b,
+                [[h // self.patch_size, w // self.patch_size]],
                 dtype=torch.long,
                 device=pixel_values.device,
-            ),
-            # Always request hidden states for potential layer stacking
-            output_hidden_states=bool(
-                self.config.vision_feature_layers > 1 or self.config.vision_feature_layers == -1
-            ),
+            ).expand(b, -1),
+            # Request hidden states only when stacking multiple layers
+            output_hidden_states=self.config.vision_feature_layers != 1,
         )
 
-        # Determine which layers to stack
         n_layers_to_stack = self.config.vision_feature_layers
         hidden_states = out.get("hidden_states")
 
         if hidden_states is not None and n_layers_to_stack != 1:
-            # Select layers
             n_total = len(hidden_states)
             if n_layers_to_stack == -1 or n_layers_to_stack >= n_total:
                 selected = hidden_states
@@ -120,12 +116,12 @@ class DopamineVLAVisionTransformer(DopamineVLAPreTrainedModel):
         # Build mask (shared by all layers since they share the same sequence)
         mask = out.get("padding_mask")
         if mask is not None:
-            mask = mask.bool()  # (N, L) float32 -> bool
+            mask = mask.bool()
         else:
             N, L = stacked_features[0].shape[:2]
             mask = torch.ones(N, L, dtype=torch.bool, device=stacked_features[0].device)
 
-        masks = tuple(mask for _ in stacked_features)
+        masks = (mask,) * len(stacked_features)
         return stacked_features, masks
 
 

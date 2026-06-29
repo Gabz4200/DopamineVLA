@@ -25,7 +25,7 @@ from transformers.modeling_outputs import ModelOutput
 class DopamineVLABaseModelOutputWithPast(ModelOutput):
     """Base model output with past for DopamineVLA.
 
-    Fields match the upstream conventions (SmolVLM / Idefics) but are defined
+    Fields match standard HF VLM output conventions but are defined
     here so we own them.
     """
 

@@ -14,13 +14,23 @@
 
 """Perceiver-based connector — fuses multi-view visual features into fixed-length tokens."""
 
-from typing import Tuple
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from .configuration_dopaminevla import DopamineVLAConfig
+
+
+def _repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Expand key/value heads to match query head count (GQA)."""
+    if n_rep == 1:
+        return x
+    bs, slen, n_kv_heads, head_dim = x.shape
+    return (
+        x.unsqueeze(3)
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    )
 
 
 class DopamineVLAPerceiverAttention(nn.Module):
@@ -42,6 +52,9 @@ class DopamineVLAPerceiverAttention(nn.Module):
         self.head_dim = head_dim
         self.n_kv_heads = n_kv_heads or n_heads
         self.n_kv_groups = self.n_heads // self.n_kv_heads
+        assert self.n_heads % self.n_kv_heads == 0, (
+            f"n_heads ({n_heads}) must be divisible by n_kv_heads ({self.n_kv_heads})"
+        )
         self.scale = head_dim**-0.5
         self.attn_dropout = attn_dropout
 
@@ -65,9 +78,17 @@ class DopamineVLAPerceiverAttention(nn.Module):
         k = self.k_proj(kv_input)
         v = self.v_proj(kv_input)
 
-        q = q.view(B, q_len, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, kv_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, kv_len, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        q = q.view(B, q_len, self.n_heads, self.head_dim)
+        k = k.view(B, kv_len, self.n_kv_heads, self.head_dim)
+        v = v.view(B, kv_len, self.n_kv_heads, self.head_dim)
+
+        # GQA: expand kv heads to match query heads
+        k = _repeat_kv(k, self.n_kv_groups)
+        v = _repeat_kv(v, self.n_kv_groups)
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         attn_out = F.scaled_dot_product_attention(
             q,
@@ -76,7 +97,6 @@ class DopamineVLAPerceiverAttention(nn.Module):
             attn_mask=attention_mask,
             dropout_p=self.attn_dropout if self.training else 0.0,
             scale=self.scale,
-            enable_gqa=True,
         )
 
         attn_out = attn_out.transpose(1, 2).reshape(B, q_len, self.n_heads * self.head_dim)
@@ -176,8 +196,8 @@ class DopamineVLAConnector(nn.Module):
 
     def forward(
         self,
-        view_hidden_states: Tuple[torch.Tensor, ...],
-        attention_masks: Tuple[torch.Tensor | None, ...] | None = None,
+        view_hidden_states: tuple[torch.Tensor, ...],
+        attention_masks: tuple[torch.Tensor | None, ...] | None = None,
     ) -> torch.Tensor:
         """
         Parameters
@@ -193,17 +213,11 @@ class DopamineVLAConnector(nn.Module):
         """
         B = view_hidden_states[0].size(0)
 
-        # 1. Concatenate all views into one context sequence.
-        context = (
-            view_hidden_states[0]
-            if len(view_hidden_states) == 1
-            else torch.cat(view_hidden_states, dim=1)
-        )  # (B, sum(L_i), D_vis)
+        context = torch.cat(view_hidden_states, dim=1)  # (B, sum(L_i), D_vis)
 
-        # 2. Build a unified attention mask for the full context + latents.
         attn_mask = None
         if attention_masks is not None:
-            valid_parts: list[torch.Tensor] = []
+            valid_parts = []
             for i, m in enumerate(attention_masks):
                 if m is None:
                     L_i = view_hidden_states[i].size(1)
@@ -214,10 +228,8 @@ class DopamineVLAConnector(nn.Module):
             ctx_mask = torch.cat(valid_parts, dim=1)
             lat_mask = torch.ones(B, self.n_latents, dtype=torch.bool, device=context.device)
             full_mask = torch.cat([ctx_mask, lat_mask], dim=1)  # (B, kv_len)
+            attn_mask = full_mask[:, None, None, :]  # (B, 1, 1, kv_len) — broadcasts over q_len
 
-            attn_mask = full_mask[:, None, None, :]  # (B, 1, 1, kv_len) bool, broadcasts over q_len
-
-        # 3. Expand latents over batch (zero-copy view).
         latents = self.latents.unsqueeze(0).expand(B, -1, -1)  # (B, n_latents, D_vis)
 
         for layer in self.layers:

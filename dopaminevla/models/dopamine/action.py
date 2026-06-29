@@ -12,11 +12,8 @@ class Time2Vec(nn.Module):
         super().__init__()
         self.out_features = out_features
 
-        # Linear component (w0, b0) Outputs 1 feature
         self.w0 = nn.Parameter(torch.randn(in_features, 1))
         self.b0 = nn.Parameter(torch.randn(1))
-
-        # Periodic component (w, b) Outputs (out_features - 1) features
         self.w = nn.Parameter(torch.randn(in_features, out_features - 1))
         self.b = nn.Parameter(torch.randn(out_features - 1))
 
@@ -24,27 +21,23 @@ class Time2Vec(nn.Module):
         """
         tau: Expected shape (batch_size, seq_len, in_features)
         """
-        # Calculate periodic features using Sine
         v1 = torch.sin(torch.matmul(tau, self.w) + self.b)
-
-        # Calculate linear features
         v2 = torch.matmul(tau, self.w0) + self.b0
-
-        # Concatenate along the last dimension to achieve 'out_features'
         return torch.cat([v1, v2], dim=-1)
 
 
 class ActionHead(nn.Module):
-    def __init__(self, hidden_size: int = 768, num_actions: int = 16, num_heads: int = 8) -> None:
+    """Cross-attends time-encoded queries into the visual/state representation.
+
+    Uses Time2Vec + linear projection to encode action times, then cross-attends
+    those embeddings (as queries) into the state/visual context (as key/value).
+    """
+
+    def __init__(self, hidden_size: int = 768, num_heads: int = 8) -> None:
         super().__init__()
 
-        # Initialize our custom Time2Vec module (1 input feature -> 64 output features)
         self.time2vec = Time2Vec(in_features=1, out_features=64)
-
-        # Project the 64 Time2Vec features up to the required hidden_size (768)
         self.time_proj = nn.Linear(64, hidden_size)
-
-        # Cross-Attention layer (Batteries included)
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=hidden_size, num_heads=num_heads, batch_first=True
         )
@@ -54,15 +47,10 @@ class ActionHead(nn.Module):
         x: (batch_size, seq_len, hidden_size) - Visual/State representation
         times: (batch_size, num_actions, 1) - Action time fractions
         """
-        # Generate the continuous time representations
-        t_embeds = self.time2vec(times)
+        t_embeds = self.time_proj(self.time2vec(times))
 
-        # Bridge the dimensionality gap
-        t_embeds = self.time_proj(t_embeds)
-
-        # Cross-Attention
-        # Query: Time tells the network what fractions of a second to look for
-        # Key/Value: The state representation provides the context
+        # Query: time fractions tell the network what to look for
+        # Key/Value: state representation provides the context
         attn_output, _ = self.cross_attention(query=t_embeds, key=x, value=x)
 
         return attn_output

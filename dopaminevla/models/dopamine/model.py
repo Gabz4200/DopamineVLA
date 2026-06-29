@@ -39,17 +39,13 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
 
     def __init__(self, config: DopamineVLAConfig) -> None:
         super().__init__(config)
-        self.padding_idx = self.config.text_config.pad_token_id
-        self.vocab_size = self.config.text_config.vocab_size
-
         self.vision_model: DopamineVLAVisionTransformer = DopamineVLAVisionTransformer._from_config(
             config.vision_config
         )
         self.connector = DopamineVLAConnector(config)
         self.text_model = AutoModel.from_config(config.text_config)
 
-        self.image_token_id = self.config.image_token_id
-        self.inputs_merger = DopamineVLAInputsMerger(self.image_token_id)
+        self.inputs_merger = DopamineVLAInputsMerger(self.config.image_token_id)
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Module:
@@ -70,7 +66,7 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
         Returns connector output ``(total_real_images, n_latents, text_hidden_size)``.
         The caller merges these into the token embedding stream via ``inputs_merger``.
         """
-        batch_size, num_images, num_channels, height, width = pixel_values.shape
+        batch_size, num_images, _, height, width = pixel_values.shape
         pixel_values = pixel_values.to(dtype=self.dtype)
         pixel_values = pixel_values.view(batch_size * num_images, *pixel_values.shape[2:])
 
@@ -84,15 +80,13 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
 
         if pixel_attention_mask is None:
             attn_mask = torch.ones(
-                size=[pixel_values.shape[i] for i in (0, 2, 3)],
+                (batch_size * num_images, height, width),
                 dtype=torch.bool,
                 device=pixel_values.device,
             )
         else:
-            attn_mask = pixel_attention_mask.view(
-                batch_size * num_images, *pixel_attention_mask.shape[2:]
-            )
-            attn_mask = attn_mask[real_images_inds].contiguous()
+            attn_mask = pixel_attention_mask.view(batch_size * num_images, height, width)
+        attn_mask = attn_mask[real_images_inds].contiguous()
 
         patch_size = self.config.vision_config.spatial_patch_size
         # Check if any pixel in a patch is valid using max pooling.
@@ -106,13 +100,10 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
             .bool()
         )
 
-        # Vision model returns tuple of features (one per selected layer) and masks.
         features, masks = self.vision_model(
             pixel_values=pixel_values,
             patch_attention_mask=patch_attention_mask,
         )
-
-        # Connector compresses features into fixed-length token set.
         image_features = self.connector(features, attention_masks=masks)
         return image_features
 
@@ -168,10 +159,9 @@ class DopamineVLAModel(DopamineVLAPreTrainedModel):
             past_key_values = DynamicCache(config=self.config)
 
         if inputs_embeds is None:
-            assert input_ids is not None
+            assert input_ids is not None  # guaranteed by the ValueError guard above
             inputs_embeds = self.text_model.get_input_embeddings()(input_ids).to(input_ids.device)
 
-        # ---- Visual inputs integration ----
         if pixel_values is not None and image_hidden_states is not None:
             raise ValueError(
                 "You cannot specify both pixel_values and image_hidden_states at the same time"

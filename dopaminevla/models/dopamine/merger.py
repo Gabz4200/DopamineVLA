@@ -15,6 +15,7 @@
 """Inputs merger — merges image hidden states into the token-embedding sequence."""
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from transformers.utils import torch_compilable_check
 
@@ -50,7 +51,7 @@ class DopamineVLAInputsMerger(nn.Module):
         )
         blocks_per_sample = num_image_tokens // patch_size
 
-        offsets = torch.nn.functional.pad(blocks_per_sample.cumsum(dim=0), (1, 0), value=0)
+        offsets = F.pad(blocks_per_sample.cumsum(dim=0), (1, 0), value=0)
         block_offset = offsets[:-1]
         row_cum = image_mask.cumsum(dim=-1)
         chunk_idx = (row_cum - 1) // patch_size
