@@ -68,6 +68,16 @@ class DopamineVLAConfig(PretrainedConfig):
         vision_connector_attn_dropout: float = 0.0,
         vision_connector_rms_eps: float = 1e-6,
         vision_feature_layers: int = 1,
+        # Action head params
+        num_action_queries: int = 16,
+        action_embed_dim: int = 512,
+        action_swa_layers: int = 4,
+        action_swa_heads: int = 8,
+        action_swa_window_size: int = 64,
+        action_swa_ffn_mult: int = 4,
+        action_delta_dim: int = 24,
+        action_cross_attention_heads: int = 8,
+        action_token_id: int | None = None,
         **kwargs: Any,
     ) -> None:
         # Resolve vision config — forward vision_feature_layers
@@ -106,6 +116,17 @@ class DopamineVLAConfig(PretrainedConfig):
         self.vision_connector_ffn_mult = vision_connector_ffn_mult
         self.vision_connector_attn_dropout = vision_connector_attn_dropout
         self.vision_connector_rms_eps = vision_connector_rms_eps
+
+        # Action head params
+        self.num_action_queries = num_action_queries
+        self.action_embed_dim = action_embed_dim
+        self.action_swa_layers = action_swa_layers
+        self.action_swa_heads = action_swa_heads
+        self.action_swa_window_size = action_swa_window_size
+        self.action_swa_ffn_mult = action_swa_ffn_mult
+        self.action_delta_dim = action_delta_dim
+        self.action_cross_attention_heads = action_cross_attention_heads
+        self.action_token_id = action_token_id
 
         # Store generation-relevant config BEFORE super().__init__ because
         # PretrainedConfig pops all GenerationConfig params from kwargs (transformers 5.x).

@@ -83,7 +83,13 @@ if tokenizer.pad_token_id is None:
 image_token = "<image>"
 tokenizer.add_tokens([image_token], special_tokens=True)
 image_token_id = cast(int, tokenizer.convert_tokens_to_ids(image_token))
+
+# Add action token
+action_token = "<|action|>"
+tokenizer.add_tokens([action_token], special_tokens=True)
+action_token_id = cast(int, tokenizer.convert_tokens_to_ids(action_token))
 print(f"  image_token_id: {image_token_id}")
+print(f"  action_token_id: {action_token_id}")
 print(f"  vocab_size: {len(tokenizer)}")
 
 # ---------------------------------------------------------------------------
@@ -107,6 +113,7 @@ config = DopamineVLAConfig(
     },
     image_token_id=image_token_id,
     pad_token_id=tokenizer.pad_token_id,
+    action_token_id=action_token_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -118,6 +125,9 @@ model = DopamineVLAForConditionalGeneration._from_config(config)
 model.to(DEVICE)
 model.eval()
 print(f"  parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+# Reset action head state (start of new episode)
+model.action_head.reset_state()
 
 # ---------------------------------------------------------------------------
 # Prepare inputs
@@ -161,3 +171,11 @@ generated_text = tokenizer.batch_decode(
 )
 print(f"\nGenerated token IDs:\n  {generated_ids[0].tolist()}")
 print(f"\nDecoded:\n  {generated_text[0]}")
+
+# Check for action token in output
+generated_ids_list = generated_ids[0].tolist()
+if action_token_id in generated_ids_list:
+    action_positions = [i for i, tid in enumerate(generated_ids_list) if tid == action_token_id]
+    print(f"  <|action|> token generated at positions: {action_positions}")
+
+print(f"  final action_state shape: {model.action_head.persistent_action_state.shape}")

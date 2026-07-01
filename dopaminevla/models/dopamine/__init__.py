@@ -19,6 +19,7 @@ ModelOutput, GenerationMixin).  Vision encoder = SigLino (our own).  No SmolVLM,
 Idefics, or other HF model subclasses.
 """
 
+from .action import ActionHead, ActionSWABlock, Time2Vec
 from .base import DopamineVLAPreTrainedModel
 from .configuration_dopaminevla import DopamineVLAConfig, DopamineVLAVisionConfig
 from .connector import (
@@ -29,7 +30,11 @@ from .connector import (
 from .generation import DopamineVLAForConditionalGeneration
 from .merger import DopamineVLAInputsMerger
 from .model import DopamineVLAModel
-from .outputs import DopamineVLABaseModelOutputWithPast, DopamineVLACausalLMOutputWithPast
+from .outputs import (
+    DopamineVLAActionOutput,
+    DopamineVLABaseModelOutputWithPast,
+    DopamineVLACausalLMOutputWithPast,
+)
 from .vision import DopamineVLAVisionTransformer
 
 __all__ = [
@@ -39,10 +44,14 @@ __all__ = [
     "DopamineVLAVisionTransformer",
     "DopamineVLABaseModelOutputWithPast",
     "DopamineVLACausalLMOutputWithPast",
+    "DopamineVLAActionOutput",
     "DopamineVLAInputsMerger",
     "DopamineVLAConnector",
     "DopamineVLAPerceiverAttention",
     "DopamineVLAPerceiverLayer",
     "DopamineVLAModel",
     "DopamineVLAForConditionalGeneration",
+    "ActionHead",
+    "ActionSWABlock",
+    "Time2Vec",
 ]

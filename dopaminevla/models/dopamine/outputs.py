@@ -46,9 +46,20 @@ class DopamineVLACausalLMOutputWithPast(ModelOutput):
     hidden_states: tuple[torch.Tensor, ...] | None = None
     attentions: tuple[torch.Tensor, ...] | None = None
     image_hidden_states: torch.Tensor | None = None
+    action: torch.Tensor | None = None
+    delta_actions: torch.Tensor | None = None
+
+
+@dataclass
+class DopamineVLAActionOutput(ModelOutput):
+    """Action head specific output."""
+
+    action: torch.Tensor | None = None
+    delta_actions: torch.Tensor | None = None
 
 
 __all__ = [
     "DopamineVLABaseModelOutputWithPast",
     "DopamineVLACausalLMOutputWithPast",
+    "DopamineVLAActionOutput",
 ]

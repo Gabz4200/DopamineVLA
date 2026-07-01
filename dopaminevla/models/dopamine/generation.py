@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DopamineVLA conditional generation — LM head + GenerationMixin."""
+"""DopamineVLA conditional generation — LM head + action head + GenerationMixin."""
 
 from typing import Any, Unpack
 
@@ -22,6 +22,7 @@ from transformers.cache_utils import Cache
 from transformers.generation import GenerationConfig, GenerationMixin
 from transformers.utils import TransformersKwargs, can_return_tuple
 
+from .action import ActionHead
 from .base import DopamineVLAPreTrainedModel
 from .configuration_dopaminevla import DopamineVLAConfig
 from .model import DopamineVLAModel
@@ -29,7 +30,7 @@ from .outputs import DopamineVLACausalLMOutputWithPast
 
 
 class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, GenerationMixin):
-    """DopamineVLA with a language modeling head (and, in the future, action head)."""
+    """DopamineVLA with a language modeling head and action head."""
 
     _tied_weights_keys = {"lm_head.weight": "model.text_model.embed_tokens.weight"}
 
@@ -42,6 +43,8 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
         )
         self.vocab_size = config.text_config.vocab_size
         self.model.text_model.generation_config = GenerationConfig.from_model_config(config)
+
+        self.action_head = ActionHead(config)
 
         self.post_init()
 
@@ -90,11 +93,8 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
         output_attentions = (
             output_attentions if output_attentions is not None else self.config.output_attentions
         )
-        output_hidden_states = (
-            output_hidden_states
-            if output_hidden_states is not None
-            else self.config.output_hidden_states
-        )
+        # Always request hidden states — action head needs all layer outputs.
+        output_hidden_states = True
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         outputs = self.model(
@@ -123,6 +123,12 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
             slice_indices = logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
 
+        # Run action head on all hidden states
+        all_hidden = outputs.hidden_states
+        delta_actions, action_state = self.action_head(
+            all_hidden, use_cache=use_cache if use_cache else False
+        )
+
         loss = None
         if labels is not None:
             loss = self.loss_function(
@@ -139,6 +145,8 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
             image_hidden_states=outputs.image_hidden_states,
+            action=action_state,
+            delta_actions=delta_actions,
         )
 
     # pyrefly: ignore[bad-override]
@@ -181,6 +189,7 @@ class DopamineVLAForConditionalGeneration(DopamineVLAPreTrainedModel, Generation
             "pixel_values": pixel_values,
             "pixel_attention_mask": pixel_attention_mask,
             "image_hidden_states": image_hidden_states,
+            "use_cache": True,
         }
         if logits_to_keep is not None:
             model_inputs["logits_to_keep"] = logits_to_keep
