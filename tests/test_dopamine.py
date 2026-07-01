@@ -125,6 +125,18 @@ class TestConfig:
         )
         assert config.image_token_id == 42
 
+    def test_action_params_defaults(self) -> None:
+        config = _make_config()
+        assert config.num_action_queries == 16
+        assert config.action_embed_dim == 512
+        assert config.action_swa_layers == 4
+        assert config.action_swa_heads == 8
+        assert config.action_swa_window_size == 64
+        assert config.action_swa_ffn_mult == 4
+        assert config.action_delta_dim == 24
+        assert config.action_cross_attention_heads == 8
+        assert config.action_token_id is None
+
     def test_serialization_roundtrip(self) -> None:
         config = _make_config()
         config_dict = config.to_dict()
@@ -132,6 +144,8 @@ class TestConfig:
         assert restored.image_token_id == config.image_token_id
         assert restored.vision_connector_n_latents == config.vision_connector_n_latents
         assert restored.text_config.hidden_size == config.text_config.hidden_size
+        assert restored.num_action_queries == config.num_action_queries
+        assert restored.action_embed_dim == config.action_embed_dim
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +172,25 @@ class TestOutputs:
         assert out.logits is not None
         assert out.logits.shape == (1, 10, VOCAB)
         assert out.past_key_values is None
+        assert out.action is None
+        assert out.delta_actions is None
+
+    def test_action_output_fields(self) -> None:
+        from dopaminevla.models.dopamine.outputs import DopamineVLAActionOutput
+
+        out = DopamineVLAActionOutput(
+            action=torch.randn(1, 1, 24),
+            delta_actions=torch.randn(1, 16, 24),
+        )
+        assert out.action is not None
+        assert out.action.shape == (1, 1, 24)
+        assert out.delta_actions is not None
+        assert out.delta_actions.shape == (1, 16, 24)
+
+        # Defaults should be None
+        out2 = DopamineVLAActionOutput()
+        assert out2.action is None
+        assert out2.delta_actions is None
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +317,172 @@ class TestDopamineVLAModel:
 
 
 # ---------------------------------------------------------------------------
+# Action head tests
+# ---------------------------------------------------------------------------
+
+
+class TestTime2Vec:
+    def test_output_shape(self) -> None:
+        from dopaminevla.models.dopamine.action import Time2Vec
+
+        t2v = Time2Vec(in_features=1, out_features=64)
+        times = torch.randn(2, 16, 1)
+        out = t2v(times)
+        assert out.shape == (2, 16, 64)
+
+
+class TestActionSWABlock:
+    def test_output_shape(self) -> None:
+        from dopaminevla.models.dopamine.action import ActionSWABlock
+
+        B, T, D = 2, 8, 64
+        block = ActionSWABlock(hidden_size=D, num_heads=4, window_size=4, ffn_mult=4)
+        x = torch.randn(B, T, D)
+        out = block(x)
+        assert out.shape == (B, T, D), f"Got {out.shape}"
+
+    def test_causal_no_future_peek(self) -> None:
+        """Position i should not depend on position i+1 (causal mask)."""
+        from dopaminevla.models.dopamine.action import ActionSWABlock
+
+        B, T, D = 1, 4, 16
+        block = ActionSWABlock(hidden_size=D, num_heads=2, window_size=4, ffn_mult=2)
+        block.eval()
+        # Input where later positions have large values
+        x = torch.zeros(B, T, D)
+        x[:, -1, :] = 100.0  # last position has extreme values
+        out = block(x)
+        # First position should NOT see the last position
+        # If causal, first position should NOT contain info from pos 3.
+        # Simple check: first position should have similar output whether or not pos 3 is extreme
+        x2 = torch.zeros(B, T, D)  # all zeros
+        out2 = block(x2)
+        assert torch.allclose(out[:, 0, :], out2[:, 0, :], atol=1e-4), (
+            "First position changed when later position changed — not causal"
+        )
+
+    def test_window_limited(self) -> None:
+        """Position should not attend to positions outside the window."""
+        from dopaminevla.models.dopamine.action import ActionSWABlock
+
+        B, T, D = 1, 8, 16
+        window = 2
+        block = ActionSWABlock(hidden_size=D, num_heads=2, window_size=window, ffn_mult=2)
+        block.eval()
+        # Put extreme values at position 0, check position 5 (outside window of 2)
+        x = torch.randn(B, T, D)
+        x_with_extreme = x.clone()
+        x_with_extreme[:, 0, :] = 1000.0
+
+        out_normal = block(x)
+        out_extreme = block(x_with_extreme)
+        # Position 5 should not be affected by position 0 (distance 5 > window 2)
+        assert torch.allclose(out_normal[:, 5, :], out_extreme[:, 5, :], atol=1e-3), (
+            "Position affected by position outside window"
+        )
+
+    def test_kv_cache_matches_full(self) -> None:
+        """Incremental with cache should match full forward."""
+        from dopaminevla.models.dopamine.action import ActionSWABlock
+
+        B, T, D = 1, 6, 32
+        window = 4
+        block = ActionSWABlock(hidden_size=D, num_heads=4, window_size=window, ffn_mult=2)
+        block.eval()
+
+        x_full = torch.randn(B, T, D)
+        out_full = block(x_full)
+
+        # Incremental: feed tokens one at a time with KV cache
+        k_cache, v_cache = None, None
+        for i in range(T):
+            x_i = x_full[:, i : i + 1, :]
+            out_i, (k_cache, v_cache) = block(x_i, cache_k=k_cache, cache_v=v_cache, use_cache=True)
+
+        # Last token output should match
+        assert torch.allclose(out_full[:, -1:, :], out_i, atol=1e-5), (
+            "Incremental with cache doesn't match full forward"
+        )
+
+
+class TestActionHead:
+    def test_forward_output_shapes(self) -> None:
+        """ActionHead produces correct delta_actions and action_state shapes."""
+        from dopaminevla.models.dopamine.action import ActionHead
+
+        config = _make_config()
+        head = ActionHead(config)
+        head.eval()
+
+        # Simulate hidden_states from text model: (B, S, D) per layer
+        B, S = 1, 10
+        n_layers = config.text_config.num_hidden_layers + 1  # +1 for embeddings
+        D = config.text_config.hidden_size
+        hidden_states = tuple(torch.randn(B, S, D) for _ in range(n_layers))
+
+        with torch.no_grad():
+            delta, state = head(hidden_states)
+
+        assert delta.shape == (1, config.num_action_queries, config.action_delta_dim), (
+            f"delta shape: {delta.shape}"
+        )
+        assert state.shape == (1, config.num_action_queries, config.action_delta_dim), (
+            f"state shape: {state.shape}"
+        )
+
+    def test_init_weights_nonzero(self) -> None:
+        """_init_weights produces non-zero, non-degenerate parameters."""
+        from dopaminevla.models.dopamine.action import ActionHead
+
+        config = _make_config()
+        head = ActionHead(config)
+
+        # action_fade: not all zeros (trunc_normal init broke symmetry)
+        assert not torch.allclose(
+            head.action_fade, torch.zeros_like(head.action_fade), atol=1e-6
+        ), "action_fade is all zeros — _init_weights may not have run"
+
+        # action_fade: at least 2 different values (per-dim diversity)
+        assert head.action_fade.unique().numel() >= 2, (
+            f"action_fade has only {head.action_fade.unique().numel()} unique values"
+        )
+
+        # delta_proj: weight norms are non-trivial (not uniformly tiny)
+        w_norm = head.delta_proj.weight.norm().item()
+        assert w_norm > 1e-3, f"delta_proj weight norm suspiciously small: {w_norm}"
+
+        # state_proj: weight norms are non-trivial
+        w_norm2 = head.state_proj.weight.norm().item()
+        assert w_norm2 > 1e-3, f"state_proj weight norm suspiciously small: {w_norm2}"
+
+    def test_state_reset(self) -> None:
+        """reset_state clears counter, buffer, and persistent state."""
+        from dopaminevla.models.dopamine.action import ActionHead
+
+        config = _make_config()
+        head = ActionHead(config)
+        head.eval()
+
+        B, S = 1, 10
+        n_layers = config.text_config.num_hidden_layers + 1
+        D = config.text_config.hidden_size
+        hidden_states = tuple(torch.randn(B, S, D) for _ in range(n_layers))
+
+        with torch.no_grad():
+            head(hidden_states)
+            head(hidden_states)
+            assert head._step_counter.item() == 2
+            assert head._action_buffer.shape[1] == config.num_action_queries * 2
+
+        head.reset_state()
+        assert head._step_counter.item() == 0
+        assert head._action_buffer.shape[1] == 0
+        assert torch.allclose(
+            head.persistent_action_state, torch.zeros_like(head.persistent_action_state)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Conditional generation tests
 # ---------------------------------------------------------------------------
 
@@ -373,6 +572,60 @@ class TestDopamineVLAForConditionalGeneration:
         )
         # Subsequent iteration: pixel_values should be None (already encoded)
         assert prepared.get("pixel_values") is None
+
+    def test_action_head_in_forward(self) -> None:
+        """Forward returns action and delta_actions with correct shapes."""
+        config = _make_config()
+        model = DopamineVLAForConditionalGeneration(config)
+        model.eval()
+        input_ids = torch.tensor([[1, 5, 10, 2]])
+        with torch.no_grad():
+            out = model(input_ids=input_ids, output_hidden_states=True)
+        assert out.action is not None, "forward should return action"
+        assert out.delta_actions is not None, "forward should return delta_actions"
+        assert out.delta_actions.shape == (1, config.num_action_queries, config.action_delta_dim), (
+            f"delta_actions shape: {out.delta_actions.shape}"
+        )
+        assert out.action.shape == (1, config.num_action_queries, config.action_delta_dim), (
+            f"action shape: {out.action.shape}"
+        )
+
+    def test_action_state_reset(self) -> None:
+        """Call action head twice, reset, verify counter and state."""
+        config = _make_config()
+        model = DopamineVLAForConditionalGeneration(config)
+        model.eval()
+        input_ids = torch.tensor([[1, 5, 10, 2]])
+        with torch.no_grad():
+            model(input_ids=input_ids, output_hidden_states=True)
+            model(input_ids=input_ids, output_hidden_states=True)
+        assert model.action_head._step_counter.item() == 2
+        assert model.action_head._action_buffer.shape[1] == config.num_action_queries * 2
+
+        model.action_head.reset_state()
+        assert model.action_head._step_counter.item() == 0
+        assert model.action_head._action_buffer.shape[1] == 0
+        expected = torch.zeros_like(model.action_head.persistent_action_state)
+        assert torch.allclose(model.action_head.persistent_action_state, expected)
+
+    def test_generate_with_action_token_no_crash(self) -> None:
+        """Generate with an action token in input does not crash."""
+        config = _make_config()
+        model = DopamineVLAForConditionalGeneration(config)
+        model.eval()
+        # Insert a dummy action_token_id — config has it None by default
+        config.action_token_id = VOCAB - 1
+        # But vocab_size is VOCAB=32000, so token 31999 is valid
+        input_ids = torch.tensor([[1, 5, config.action_token_id, 10, 2]])
+        with torch.no_grad():
+            out = model.generate(
+                input_ids=input_ids,
+                max_new_tokens=5,
+                do_sample=False,
+                use_cache=True,
+            )
+        assert out is not None
+        assert out.shape[1] >= 5  # at least the original tokens
 
 
 # ---------------------------------------------------------------------------
