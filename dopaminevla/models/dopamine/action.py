@@ -75,14 +75,7 @@ class ActionSWABlock(nn.Module):
     ) -> torch.Tensor:
         """Build causal sliding window mask.
 
-        Args:
-            new_len: Number of new token positions.
-            full_len: Total sequence length (cached + new).
-            new_start: Position index where new tokens start in the full sequence.
-
-        Returns:
-            Tensor (new_len, full_len) with 0.0 for allowed positions,
-            float('-inf') for masked positions.
+        Returns (new_len, full_len) with 0.0 for allowed, -inf for masked.
         """
         rows = torch.arange(new_len, device=device, dtype=dtype).unsqueeze(1)  # (N, 1)
         cols = torch.arange(full_len, device=device, dtype=dtype).unsqueeze(0)  # (1, L)
@@ -290,38 +283,31 @@ class ActionHead(nn.Module):
 
         # 4. Append to buffer (detach to prevent cross-step graph)
         with torch.no_grad():
-            if self._action_buffer.shape[1] == 0:
-                self._action_buffer = action_tokens
-            else:
-                self._action_buffer = torch.cat(
-                    [self._action_buffer, action_tokens.detach()], dim=1
-                )
+            self._action_buffer = torch.cat([self._action_buffer, action_tokens.detach()], dim=1)
             window = self.swa_layers[0].window_size
             max_keep = max(window, self.num_queries * 2)
             if self._action_buffer.shape[1] > max_keep:
                 self._action_buffer = self._action_buffer[:, -max_keep:, :]
 
         # 5. SWA layers
-        has_cache = use_cache and self._swa_kv_caches is not None
-        swa_input = action_tokens if has_cache else self._action_buffer
+        is_incremental = use_cache and self._swa_kv_caches is not None
+        swa_input = action_tokens if is_incremental else self._action_buffer
         swa_out = self.swa_norm(swa_input)
 
         new_caches: list[tuple[torch.Tensor, torch.Tensor] | None] = []
         for i, layer in enumerate(self.swa_layers):
             k, v = self._swa_kv_caches[i] if self._swa_kv_caches else (None, None)
+            out = layer(swa_out, cache_k=k, cache_v=v, use_cache=use_cache)
             if use_cache:
-                swa_out, (k_new, v_new) = layer(swa_out, cache_k=k, cache_v=v, use_cache=True)
+                swa_out, (k_new, v_new) = out
                 new_caches.append((k_new, v_new))
             else:
-                swa_out = layer(swa_out)
+                swa_out = out
                 new_caches.append(None)
 
-        if use_cache:
-            self._swa_kv_caches = new_caches
-        else:
-            self._swa_kv_caches = None
+        self._swa_kv_caches = new_caches if use_cache else None
 
-        if not has_cache:
+        if not is_incremental:
             swa_out = swa_out[:, -self.num_queries :, :]
 
         # 6. Project to delta actions
